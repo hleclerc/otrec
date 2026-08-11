@@ -7,10 +7,10 @@ composition diracs -> disques, et `test_disks.py` pour le modèle disques seul).
 """
 import numpy as np
 
-from reconstruction.Sinogram import Sinogram
-from reconstruction.Reconstruction import Reconstruction
-from reconstruction.optimizers import GradientDescent, LBFGS
-from sdot.testing import test
+from otrec.Sinogram import Sinogram
+from otrec.Reconstruction import Reconstruction
+from otrec.optimizers import GradientDescent, LBFGS
+from loom.testing import test
 
 
 def _disk_sinogram( nb_angles = 8, nb_bins = 201, extent = 6.0, center = ( 0.3, -0.2 ), radius = 1.0 ):

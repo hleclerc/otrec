@@ -30,7 +30,7 @@ class GradientDescent(Optimizer):
         self.nb_steps = nb_steps
 
     def minimize(self, scalar_loss, x0, callback=None):
-        from sdot import driver
+        from loom import driver
 
         x = x0.copy() if isinstance(x0, np.ndarray) else np.array(x0)
         # jit ONCE and reuse across steps: without it each step re-traces + re-lowers the whole
@@ -123,7 +123,7 @@ class LBFGS(Optimizer):
         self.disp_tol = disp_tol
 
     def minimize(self, scalar_loss, x0, callback=None):
-        from sdot import driver
+        from loom import driver
 
         x0 = x0.copy() if isinstance(x0, np.ndarray) else np.array(x0)
         shape_orig = x0.shape
@@ -192,7 +192,7 @@ class GradientDescentLineSearch(Optimizer):
         self.rho = rho
 
     def minimize(self, scalar_loss, x0, callback=None):
-        from sdot import driver
+        from loom import driver
 
         x = x0.copy() if isinstance(x0, np.ndarray) else np.array(x0)
         grad = driver.jit(driver.grad(scalar_loss))
@@ -233,7 +233,7 @@ class Adam(Optimizer):
         self.grad_clip = grad_clip
 
     def minimize(self, scalar_loss, x0, callback=None):
-        from sdot import driver
+        from loom import driver
 
         x = x0.copy() if isinstance(x0, np.ndarray) else np.array(x0)
         grad = driver.jit(driver.grad(scalar_loss))

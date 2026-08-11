@@ -14,7 +14,7 @@ Usage direct : `python -m applications.reconstruction.benchmarks.execution_speed
 import argparse
 import time
 
-from sdot import driver
+from loom import driver
 
 from ...Reconstruction import Reconstruction
 from ...Sinogram import Sinogram

@@ -21,7 +21,8 @@ directement consommable comme distribution cible d'un `OtPlan1d`.
 """
 import numpy as np
 
-from sdot import Image, ShapeVar, Axis, Tensor, Aggregate
+from loom import ShapeVar, Axis, Tensor, Aggregate
+from sdot import Image
 
 
 class Sinogram( Aggregate ):

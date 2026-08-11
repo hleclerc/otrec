@@ -7,10 +7,10 @@ préservés dans la reconstruction.
 """
 import numpy as np
 
-from reconstruction.halo import ( Halo, alternate, interior_values, mass_profile,
+from otrec.halo import ( Halo, alternate, interior_values, mass_profile,
                                   scan_interior_mass, void_fraction )
-from reconstruction.Sinogram import Sinogram
-from sdot.testing import test
+from otrec.Sinogram import Sinogram
+from loom.testing import test
 
 
 def _annulus_sinogram( a, b, nb_angles = 5, nb_bins = 256, extent = 10.0 ):

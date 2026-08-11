@@ -11,7 +11,7 @@ Usage : `SDOT_DEVICE=cpu JAX_PLATFORMS=cpu python -m applications.reconstruction
 import argparse
 import time
 
-from sdot import driver
+from loom import driver
 
 from ...Reconstruction import Reconstruction
 from ...Sinogram import Sinogram

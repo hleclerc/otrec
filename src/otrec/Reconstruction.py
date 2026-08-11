@@ -23,7 +23,7 @@ import time
 
 import numpy as np
 
-from sdot import Tensor, driver
+from loom import Tensor, driver
 
 from .Sinogram import Sinogram
 from .models import DiracModel, DiskModel, Model

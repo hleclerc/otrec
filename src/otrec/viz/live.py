@@ -6,7 +6,7 @@ conservé en mémoire : c'est un outil d'observation d'une exécution, pas un st
 
 Exemple minimal::
 
-    from applications.reconstruction.viz.live import LiveSimulation
+    from otrec.viz.live import LiveSimulation
 
     live = LiveSimulation("essai-lung")
     points = live.canvas("positions", extent=1.0)  # geometry="points" par défaut

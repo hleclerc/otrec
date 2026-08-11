@@ -1,8 +1,8 @@
 import numpy as np
 
-from reconstruction.Sinogram import Sinogram
+from otrec.Sinogram import Sinogram
 from sdot import SumOfDiracs1d, OtPlan1d
-from sdot.testing import test
+from loom.testing import test
 
 
 # -- construction / état initial -----------------------------------------

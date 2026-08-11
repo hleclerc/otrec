@@ -6,11 +6,11 @@ flottante près -- voir `dirac_sycl.py` pour pourquoi un seul kernel fwd-only su
 """
 import numpy as np
 
-from reconstruction.Sinogram import Sinogram
-from reconstruction.models import DiracModel
-from reconstruction.dirac_sycl import diracs_cost_grad, subspace_hessian, MAX_DIRS
-from sdot import driver
-from sdot.testing import test
+from otrec.Sinogram import Sinogram
+from otrec.models import DiracModel
+from otrec.dirac_sycl import diracs_cost_grad, subspace_hessian, MAX_DIRS
+from loom import driver
+from loom.testing import test
 
 
 def _disk_sinogram( nb_angles = 8, nb_bins = 201, extent = 6.0, center = ( 0.3, -0.2 ), radius = 1.0 ):

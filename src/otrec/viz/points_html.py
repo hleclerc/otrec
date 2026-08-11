@@ -21,7 +21,7 @@ import base64
 
 import numpy as np
 
-from sdot import Tensor
+from loom import Tensor
 
 
 _HTML = """<!DOCTYPE html>
@@ -582,6 +582,7 @@ def export_positions_html(
     )
     with open( out_path, "w" ) as f:
         f.write( html )
-    total = sum( counts )
-    print( f"html sauvé: { out_path } ({ len( frames ) } frame(s), { total } points au total, "
-           f"{ len( html ) / 1e6:.1f} Mo)" )
+    # total = sum( counts )
+    print( f"OUTPUT: { out_path }" )
+    # print( f"html sauvé: { out_path } ({ len( frames ) } frame(s), { total } points au total, "
+    #        f"{ len( html ) / 1e6:.1f} Mo)" )

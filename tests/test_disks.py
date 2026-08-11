@@ -10,14 +10,14 @@ import os
 
 import numpy as np
 
-from reconstruction.Sinogram import Sinogram
-from reconstruction.Reconstruction import Reconstruction
-from reconstruction.disks import DiskProjector
-from reconstruction.models import DiskModel, sinogram_diracs
-from reconstruction.optimizers import LBFGS
-from reconstruction.viz.points_html import export_positions_html
-from sdot import driver
-from sdot.testing import test
+from otrec.Sinogram import Sinogram
+from otrec.Reconstruction import Reconstruction
+from otrec.disks import DiskProjector
+from otrec.models import DiskModel, sinogram_diracs
+from otrec.optimizers import LBFGS
+from otrec.viz.points_html import export_positions_html
+from loom import driver
+from loom.testing import test
 
 
 EXTENT = 6.0

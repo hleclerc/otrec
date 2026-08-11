@@ -4,7 +4,7 @@ import numpy as np
 import time
 from pathlib import Path
 
-from sdot import Tensor
+from loom import Tensor
 
 from .Reconstruction import Reconstruction
 from .Sinogram import Sinogram

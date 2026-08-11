@@ -6,9 +6,9 @@ de masse qui est hors du champ de vue.
 """
 import numpy as np
 
-from reconstruction.mesh import GradedMesh, scan_exterior_scale
-from reconstruction.Sinogram import Sinogram
-from sdot.testing import test
+from otrec.mesh import GradedMesh, scan_exterior_scale
+from otrec.Sinogram import Sinogram
+from loom.testing import test
 
 
 def _sino( nb_angles = 24, nb_bins = 512, extent = 10.0 ):

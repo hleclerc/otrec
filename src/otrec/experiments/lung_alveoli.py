@@ -274,6 +274,305 @@ def run_subspace( nb_alveoli = 1_000, alveolus_radius = 0.75, nb_diracs = 10_000
     return results
 
 
+def _parabolic_bracket( model, p, cost0, g, a, max_tries = 30 ):
+    """Cherche `a` tel que le point du milieu (`a/2`) soit le plus bas des trois coûts en
+    `(0, a/2, a)` le long de `-g` -- coeur de `_parabolic_line_search`, isolé ici pour être
+    réutilisable par le diagnostic (`run_parabola_diagnostic`), qui a besoin du bracket ET du
+    nombre d'essais (mesure de la qualité du guess initial), pas seulement du minimum final.
+
+    SEUL le coût est évalué aux points candidats (`model.value`, kernel SYCL fusionné SANS le
+    calcul de gradient -- voir `dirac_sycl.diracs_cost` -- le gradient y serait de toute façon
+    jeté).
+
+    - `cost_half` le plus petit des trois -> bracket trouvé, on s'arrête.
+    - `cost_a` le plus petit -> ça décroît encore au bord `a`, le minimum est plus loin : on
+      double `a` (en réutilisant l'évaluation déjà faite en `a` comme nouveau point du milieu).
+    - `cost0` (le départ) le plus petit -> `a` est trop grand : on le divise par deux (même
+      réutilisation, côté bas).
+    Chaque expansion/réduction ne coûte donc qu'UNE évaluation de coût, pas deux.
+
+    Renvoie `(a, cost_half, cost_a, tries)` -- `tries` = nombre d'expansions/réductions avant le
+    bracket (0 = le guess initial était déjà bon).
+    """
+    cost_half = model.value( p - ( a / 2 ) * g )
+    cost_a    = model.value( p - a * g )
+
+    tries = 0
+    for tries in range( max_tries ):
+        if cost_half <= cost0 and cost_half <= cost_a:
+            break
+        if cost_a <= cost_half and cost_a <= cost0:
+            a *= 2
+            cost_half, cost_a = cost_a, model.value( p - a * g )
+        else:
+            a /= 2
+            cost_a, cost_half = cost_half, model.value( p - ( a / 2 ) * g )
+
+    return a, cost_half, cost_a, tries
+
+
+def _parabola_vertex( cost0, cost_half, cost_a, a ):
+    """Abscisse du minimum de la parabole passant par les 3 points équidistants `(0, cost0)`,
+    `(a/2, cost_half)`, `(a, cost_a)`, repliée dans `[0, a]` (protection contre un `denom` proche
+    de 0 -- parabole quasi plate, la position du sommet devient numériquement instable)."""
+    h = a / 2
+    denom = cost0 - 2 * cost_half + cost_a
+    if denom <= 0:
+        return h
+    return min( max( h + h * ( cost0 - cost_a ) / ( 2 * denom ), 0.0 ), a )
+
+
+def _parabola_eval( cost0, cost_half, cost_a, a, x ):
+    """Valeur (vectorisée) de CETTE MÊME parabole en `x` -- interpolation de Lagrange par les 3
+    points équidistants `(0, cost0)`, `(h, cost_half)`, `(2h, cost_a)` avec `h = a/2`. Utilisé
+    UNIQUEMENT pour le tracé diagnostique (`run_parabola_diagnostic`) -- `_parabola_vertex`
+    n'en a pas besoin, une formule fermée suffit pour le seul sommet."""
+    h = a / 2
+    x = np.asarray( x )
+    l0 = ( x - h ) * ( x - 2 * h ) / ( 2 * h * h )
+    l1 = x * ( x - 2 * h ) / ( -h * h )
+    l2 = x * ( x - h ) / ( 2 * h * h )
+    return cost0 * l0 + cost_half * l1 + cost_a * l2
+
+
+def _parabolic_line_search( model, p, cost0, g, a, max_tries = 30 ):
+    """Pas le long de `-g` choisi par ajustement d'une parabole sur 3 points (0, a/2, a) au lieu
+    d'un backtracking Armijo -- voir `_parabolic_bracket` pour le détail du bracketing et
+    `_parabola_vertex` pour le sommet retenu.
+
+    `a` : guess de départ fourni par l'appelant -- `run_two_phase_switch` y passe `2 *` le
+    coefficient ACCEPTÉ au pas précédent (voir `a_min` en sortie ici) plutôt que de repartir d'une
+    heuristique à chaque pas : le pas optimal ne varie en général que doucement d'une itération à
+    l'autre, et repartir de son double laisse toujours une chance de redétecter une expansion.
+
+    Renvoie `(p_new, cost_new, g_new, a_min)` -- le gradient en `p_new` est RÉ-évalué (nécessaire
+    pour le pas de gradient suivant, `_parabolic_bracket` n'en a pas eu besoin) ; `a_min` est le
+    coefficient ACCEPTÉ, à transmettre (doublé) comme guess du pas suivant.
+    """
+    a, cost_half, cost_a, _tries = _parabolic_bracket( model, p, cost0, g, a, max_tries )
+    a_min = _parabola_vertex( cost0, cost_half, cost_a, a )
+
+    cost_new, g_new = model.value_and_grad( p - a_min * g )
+    return p - a_min * g, float( cost_new ), np.asarray( g_new ), a_min
+
+
+def run_two_phase_switch(
+        nb_alveoli = 1_000, alveolus_radius = 0.75, nb_diracs = 10_000,
+        phase1_guess_disp_frac = 0.01,
+        phase1_disp_tol_frac = 1e-5, phase1_max_steps = 200,
+        max_iter = 100, max_dirs = 5,
+        out = "tmp/lung_alveoli_two_phase.png" ):
+    """Sanity check pour l'hypothèse "coupler les directions de recherche (`SubspaceNewtonLBFGS`)
+    n'apporte rien tant que l'assignation OT n'est pas stabilisée" (la Hessienne du sous-espace
+    n'est fiable qu'à assignation figée, voir la docstring de la classe) : AVANT de construire un
+    critère de bascule basé sur la stabilité d'assignation (plus cher à instrumenter), on bascule
+    ici sur un critère plus simple -- le déplacement max par pas, MÊME convention que
+    `disks_disp_tol_frac` ailleurs dans ce fichier, fraction de `sino.extent`.
+
+    Phase 1 : descente de gradient + recherche de pas par ajustement de parabole
+    (`_parabolic_line_search`, PAS de backtracking Armijo -- voir sa docstring) écrite à la main
+    ici (PAS `GradientDescentLineSearch.minimize`, qui n'a pas de critère d'arrêt anticipé -- voir
+    `optimizers.py`), + arrêt dès que le déplacement max d'un point passe sous
+    `phase1_disp_tol_frac * sino.extent`. Utilise `model.value_and_grad` (kernel SYCL fusionné)
+    plutôt que l'autodiff Jax, pour rester comparable à la phase 2.
+    Phase 2 : `SubspaceNewtonLBFGS` classique à partir du nuage obtenu, jusqu'à consommer le
+    budget `max_iter` restant.
+
+    Comparé à `SubspaceNewtonLBFGS` seul depuis le MÊME départ (même fantôme, seed=1) sur le MÊME
+    budget total `max_iter` de pas -- l'hypothèse prédit une convergence au moins aussi bonne (en
+    pas ET en temps, la phase 1 étant nettement moins chère par pas que la Hessienne du
+    sous-espace) pour la version à deux phases.
+
+    Jetable/exploratoire : pas d'export HTML (contrairement à `run_subspace`), juste les courbes
+    de loss vs itérations ET vs temps -- suffisant pour la question posée ("est-ce que ça vaut le
+    coup de creuser un critère de bascule plus fin, basé sur la stabilité d'assignation ?").
+    """
+    print( f"génération du fantôme ({ nb_alveoli } alvéoles)..." )
+    sino, _lobes, _alveoli = make_lung_phantom( nb_alveoli = nb_alveoli, alveolus_radius = alveolus_radius )
+
+    def make_rec():
+        rec = Reconstruction( sino, verbose = True )
+        rec.random_points( nb_diracs, seed = 1 )
+        return rec
+
+    results = {}
+
+    # -- baseline : SubspaceNewtonLBFGS seul depuis le départ ---------------
+    # name = "SubspaceNewtonLBFGS (seul)"
+    # print( f"reconstruction ({ nb_diracs } diracs, { name }, max_iter={ max_iter })..." )
+    # rec = make_rec()
+    # t0 = time.time()
+    # losses = []
+    # def callback( step, pos, losses = losses, t0 = t0, name = name, rec = rec ):
+    #     l = rec.loss( points = pos )
+    #     losses.append( ( step, l, time.time() - t0 ) )
+    #     if step % 10 == 0 or step == -1:
+    #         print( f"  [{ name }] step { step }: loss = { l:.6f} ({ time.time() - t0:.1f}s)" )
+    # rec.diracs( callback = callback, backend = "sycl", optimizer = SubspaceNewtonLBFGS(
+    #     sinogram = sino, max_dirs = max_dirs, max_iter = max_iter, ftol = 1e-10 ) )
+    # print( f"[{ name }] terminé en { time.time() - t0:.1f}s" )
+    # results[ name ] = losses
+
+    # -- deux phases : line search (déplacement borné) puis SubspaceNewton --
+    name = "line search puis SubspaceNewtonLBFGS"
+    print( f"reconstruction ({ nb_diracs } diracs, { name })..." )
+    rec = make_rec()
+    model = rec.dirac_model()
+    t0 = time.time()
+    losses = []
+
+    p = np.array( rec.points.raw )
+    disp_tol = phase1_disp_tol_frac * sino.extent
+    cost, g = model.value_and_grad( p )
+    cost, g = float( cost ), np.asarray( g )
+    losses.append( ( 0, cost, time.time() - t0 ) )
+    print( f"  [phase1] step 0: loss = { cost:.6f} (départ)" )
+
+    # guess initial : déplacement MOYEN d'un point = `phase1_guess_disp_frac * sino.extent`. Aux
+    # pas suivants, `_parabolic_line_search` renvoie le coefficient ACCEPTÉ -- on repart de son
+    # double plutôt que de recalculer cette heuristique à chaque pas (le pas optimal ne varie en
+    # général que doucement d'une itération à l'autre).
+    mean_norm = float( np.mean( np.linalg.norm( g, axis = -1 ) ) )
+    a_guess = phase1_guess_disp_frac * sino.extent / mean_norm if mean_norm > 0 else 0.0
+
+    phase1_steps = 0
+    for step in range( 1, phase1_max_steps + 1 ):
+        p_try, cost_try, g_try, a_used = _parabolic_line_search( model, p, cost, g, a_guess )
+        a_guess = 2 * a_used
+
+        disp = float( np.max( np.abs( p_try - p ) ) )
+        p, cost, g = p_try, cost_try, g_try
+        phase1_steps = step
+        losses.append( ( step, cost, time.time() - t0 ) )
+        if step % 10 == 0:
+            print( f"  [phase1] step { step }: loss = { float( cost ):.6f}, "
+                   f"déplacement max = { disp:.4g} (seuil { disp_tol:.4g})" )
+        if disp < disp_tol:
+            print( f"  [phase1] arrêt : déplacement max { disp:.4g} < seuil { disp_tol:.4g} "
+                   f"après { step } pas" )
+            break
+    else:
+        print( f"  [phase1] budget de { phase1_max_steps } pas épuisé sans passer sous le seuil "
+               "de déplacement" )
+
+    rec.set_points( model.wrap( p ) )
+    print( f"[phase1] terminé en { phase1_steps } pas ({ time.time() - t0:.1f}s), "
+           f"loss = { float( cost ):.6f}" )
+
+    # phase2_budget = max( max_iter - phase1_steps, 1 )
+    # def callback2( step, pos, losses = losses, t0 = t0, phase1_steps = phase1_steps, rec = rec ):
+    #     l = rec.loss( points = pos )
+    #     losses.append( ( phase1_steps + step + 1, l, time.time() - t0 ) )
+    #     if step % 10 == 0 or step == -1:
+    #         print( f"  [phase2] step { step }: loss = { l:.6f} ({ time.time() - t0:.1f}s)" )
+    # rec.diracs( callback = callback2, backend = "sycl", optimizer = SubspaceNewtonLBFGS(
+    #     sinogram = sino, max_dirs = max_dirs, max_iter = phase2_budget, ftol = 1e-10 ) )
+    # print( f"[{ name }] terminé en { time.time() - t0:.1f}s "
+    #        f"({ phase1_steps } pas phase1 + jusqu'à { phase2_budget } pas phase2)" )
+    results[ name ] = losses
+
+    rec.export_html( "tmp/pouet.html", animate = False )
+
+    fig, axes = plt.subplots( 1, 2, figsize = ( 13, 5 ) )
+    for name, losses in results.items():
+        steps = [ s for s, l, t in losses ]
+        vals  = [ l for s, l, t in losses ]
+        times = [ t for s, l, t in losses ]
+        axes[ 0 ].plot( steps, vals, label = name )
+        axes[ 1 ].plot( times, vals, label = name )
+    axes[ 0 ].set_xlabel( "itération (phase1 comptée comme pas équivalents)" )
+    axes[ 1 ].set_xlabel( "temps (s)" )
+    for ax in axes:
+        ax.set_ylabel( "loss" )
+        ax.set_yscale( "log" )
+        ax.legend()
+    fig.suptitle( f"SubspaceNewtonLBFGS seul vs. line search + SubspaceNewtonLBFGS ({ nb_diracs } diracs)" )
+    fig.tight_layout()
+    fig.savefig( out, dpi = 150 )
+    print( f"figure sauvée: { out }" )
+    return results
+
+
+def run_parabola_diagnostic(
+        nb_alveoli = 1_000, alveolus_radius = 0.75, nb_diracs = 10_000,
+        phase1_guess_disp_frac = 0.01, nb_steps = 5, nb_samples = 20,
+        out = "tmp/lung_alveoli_parabola_diagnostic.png" ):
+    """Diagnostic pour la recherche de pas par parabole (`_parabolic_line_search`, voir
+    `run_two_phase_switch`) : sur les `nb_steps` PREMIERS pas de la phase 1 (là où la perte varie
+    le plus, la comparaison au modèle d'ordre 2 y est la plus parlante -- même raisonnement que
+    `run_disks_alpha_profile`), superpose à chaque pas :
+    - la parabole EFFECTIVEMENT utilisée pour choisir le pas (3 points `(0, a/2, a)`, voir
+      `_parabolic_bracket`/`_parabola_vertex`) ;
+    - le coût RÉEL échantillonné sur `nb_samples` valeurs le long de la MÊME direction `-g`, via
+      `model.value` (coût seul, kernel SYCL fusionné SANS gradient -- `dirac_sycl.diracs_cost`,
+      voir sa docstring) -- pas besoin de gradient pour juger l'ordre 2, donc pas besoin de son
+      coût de calcul.
+    Répond à deux questions : le modèle d'ordre 2 est-il pertinent ici (la parabole colle-t-elle
+    à la courbe réelle près du minimum retenu) ? Et le guess `2 * a_min` du pas suivant tombe-t-il
+    dans une zone où ce modèle reste raisonnable (au lieu de re-bracketer de zéro à chaque pas) ?
+
+    Chaque panneau va de `0` à `1.3 * max(a, 2*a_min)` (assez large pour montrer aussi la zone du
+    guess suivant) et annote `a_min` (pas retenu) et `2*a_min` (guess suivant) par des traits
+    verticaux, plus `tries` (nombre d'expansions/réductions du bracket -- 0 = guess déjà bon) dans
+    le titre.
+    """
+    print( f"génération du fantôme ({ nb_alveoli } alvéoles)..." )
+    sino, _lobes, _alveoli = make_lung_phantom( nb_alveoli = nb_alveoli, alveolus_radius = alveolus_radius )
+
+    rec = Reconstruction( sino, verbose = True )
+    rec.random_points( nb_diracs, seed = 1 )
+    model = rec.dirac_model()
+
+    p = np.array( rec.points.raw )
+    cost, g = model.value_and_grad( p )
+    cost, g = float( cost ), np.asarray( g )
+
+    mean_norm = float( np.mean( np.linalg.norm( g, axis = -1 ) ) )
+    a_guess = phase1_guess_disp_frac * sino.extent / mean_norm if mean_norm > 0 else 0.0
+
+    fig, axes = plt.subplots( 1, nb_steps, figsize = ( 4.5 * nb_steps, 4 ), squeeze = False )
+    axes = axes[ 0 ]
+
+    for step in range( nb_steps ):
+        a, cost_half, cost_a, tries = _parabolic_bracket( model, p, cost, g, a_guess )
+        a_min = _parabola_vertex( cost, cost_half, cost_a, a )
+
+        x_max = 1.3 * max( a, 2 * a_min, 1e-12 )
+        xs = np.linspace( 0.0, x_max, nb_samples )
+        true_costs = np.array( [ model.value( p - x * g ) for x in xs ] )
+        fit_costs = _parabola_eval( cost, cost_half, cost_a, a, xs )
+
+        ax = axes[ step ]
+        ax.plot( xs, true_costs, "o-", label = "coût réel", color = "tab:blue" )
+        ax.plot( xs, fit_costs, "--", label = "parabole (0, a/2, a)", color = "tab:orange" )
+        ax.scatter( [ 0, a / 2, a ], [ cost, cost_half, cost_a ], color = "black", zorder = 3,
+                    label = "points du fit" )
+        ax.axvline( a_min, color = "tab:green", linestyle = ":", label = "a_min (retenu)" )
+        ax.axvline( 2 * a_min, color = "tab:red", linestyle = ":", label = "2*a_min (guess suivant)" )
+        ax.set_title( f"pas { step } (tries={ tries })\ncost0={ cost:.4g}" )
+        ax.set_xlabel( "coefficient a" )
+        if step == 0:
+            ax.set_ylabel( "coût" )
+            ax.legend( fontsize = 8 )
+
+        # avance au pas suivant EXACTEMENT comme `_parabolic_line_search` (gradient RÉ-évalué au
+        # point retenu, `model.value` seul n'a servi qu'à l'échantillonnage ci-dessus)
+        p = p - a_min * g
+        cost, g = model.value_and_grad( p )
+        cost, g = float( cost ), np.asarray( g )
+        a_guess = 2 * a_min
+
+        true_min = float( np.min( true_costs ) )
+        print( f"  [pas { step }] a_min={ a_min:.4g}, tries={ tries }, "
+               f"coût réel au point retenu={ cost:.6f} vs min échantillonné={ true_min:.6f} "
+               f"(écart relatif { abs( cost - true_min ) / max( abs( true_min ), 1e-30 ):.2%})" )
+
+    fig.suptitle( f"Parabole vs coût réel -- { nb_steps } premiers pas de phase 1 ({ nb_diracs } diracs)" )
+    fig.tight_layout()
+    fig.savefig( out, dpi = 150 )
+    print( f"figure sauvée: { out }" )
+
+
 def run_subspace_alpha_profile(
         nb_alveoli = 1_000, alveolus_radius = 0.75, nb_diracs = 10_000, max_iter = 60,
         max_dirs = 5, capture_step = None, alpha_range = ( -2.0, 2.0 ), nb_alpha = 61,
@@ -342,95 +641,103 @@ def run_subspace_alpha_profile(
 
 def run_disks_alpha_profile(
         nb_alveoli = 1_000, alveolus_radius = 0.75, nb_disks = 1_000, disk_radius = 0.5,
-        max_iter = 60, min_iter = 5, alpha_range = ( -2.0, 2.0 ), nb_alpha = 41, fd_h = 1e-3,
+        nb_steps = 6, alpha_range = ( -2.0, 2.0 ), nb_alpha = 41, fd_h = 1e-3,
         out = "tmp/lung_alveoli_disks_alpha_profile.png" ):
     """Même diagnostic que `run_subspace_alpha_profile`, par acquis de conscience, mais pour le
     modèle DISQUES (`models.DiskModel`) au lieu de DIRACS -- est-ce que le même genre d'écart
     entre perte réelle et modèle quadratique local se produit aussi ici ?
 
-    Différence de taille avec le cas diracs : il n'existe PAS d'équivalent disques de
-    `dirac_sycl.subspace_hessian` (pas de kernel SYCL fusionné pour `DiskModel`, voir sa
-    docstring -- pas de `value_and_grad`), donc `rec.disks()` tourne avec le `LBFGS` scipy
-    standard (autodiff Jax), dont la direction de recherche interne (mémoire de courbure BFGS)
-    n'est PAS exposée par l'API Python -- impossible d'intercepter "le pas que le modèle
-    proposait avant backtracking" comme pour `SubspaceNewtonLBFGS`. Le "modèle" comparé ici est
-    donc un développement de Taylor local GÉNÉRIQUE (pas la formule fermée "assignation figée")
-    au point de départ du DERNIER pas RÉELLEMENT accepté par LBFGS (`x_prev -> x_last`, capturé
-    via `callback`) : terme linéaire = vrai gradient Jax en `x_prev`, terme quadratique = dérivée
-    seconde directionnelle par différences finies sur le gradient (pas `fd_h`, en unités alpha).
+    Contrairement au cas diracs (dernier pas seulement -- la trajectoire y étant déjà quasi
+    stationnaire à ce stade), profile ici les `nb_steps` PREMIERS pas (une courbe par pas) : c'est
+    loin de tout minimum, là où un modèle local a le plus de chances de s'écarter de la vraie
+    perte, que la comparaison est la plus parlante.
+
+    Il n'existe PAS d'équivalent disques de `dirac_sycl.subspace_hessian` (pas de kernel SYCL
+    fusionné pour `DiskModel`, voir sa docstring -- pas de `value_and_grad`), donc `rec.disks()`
+    tourne avec le `LBFGS` scipy standard (autodiff Jax), dont la direction de recherche interne
+    (mémoire de courbure BFGS) n'est PAS exposée par l'API Python -- impossible d'intercepter "le
+    pas que le modèle proposait avant backtracking" comme pour `SubspaceNewtonLBFGS`. Pour chaque
+    pas, le "modèle" comparé est donc un développement de Taylor local GÉNÉRIQUE (PAS de formule
+    fermée analytique ici -- Hessienne évaluée NUMÉRIQUEMENT) au point de départ du pas RÉELLEMENT
+    accepté par LBFGS : terme linéaire = vrai gradient Jax, terme quadratique = dérivée seconde
+    directionnelle par différences finies sur le gradient (pas `fd_h`, en unités alpha).
 
     `nb_disks=1_000` (au lieu des `10_000` diracs par défaut) : le modèle disques est BEAUCOUP
-    plus cher (balayage image par tranche d'angle à chaque évaluation, pas de kernel fusionné,
-    voir `models.DiskModel`) -- 1000 suffit pour ce diagnostic et reste supportable.
-
-    `min_iter` : voir `Reconstruction.disks` -- la perte disques a des directions plates,
-    LBFGS-B peut sinon conclure à convergence après 0-1 pas et il n'y aurait alors aucun pas à
-    profiler.
+    plus cher par évaluation (balayage image par tranche d'angle, pas de kernel fusionné, voir
+    `models.DiskModel`) -- se limiter aux `nb_steps` premiers pas (au lieu d'une pleine
+    convergence) garde ça supportable. `min_iter = max_iter = nb_steps` force EXACTEMENT ce
+    nombre de pas (voir `Reconstruction.disks` -- sans ça, LBFGS-B peut conclure à convergence
+    après 0-1 pas sur ce modèle, directions plates).
     """
-    from sdot import driver
+    from loom import driver
 
     print( f"génération du fantôme ({ nb_alveoli } alvéoles)..." )
     sino, _lobes, _alveoli = make_lung_phantom( nb_alveoli = nb_alveoli, alveolus_radius = alveolus_radius )
 
-    rec = Reconstruction( sino, radius = disk_radius, max_iter = max_iter, ftol = 1e-10, verbose = True )
+    rec = Reconstruction( sino, radius = disk_radius, max_iter = nb_steps, ftol = 1e-10, verbose = True )
     rec.random_points( nb_disks, seed = 1 )
     model = rec.disk_model()
 
-    diag = {}
     t0 = time.time()
+    history = []
     def callback( step, pos ):
-        x = np.array( pos.raw )
-        if "x" in diag:
-            diag[ "x_prev" ] = diag[ "x" ]
-        diag[ "step" ], diag[ "x" ] = step, x
-        if step % 5 == 0 or step == -1:
-            print( f"  step { step }: loss = { rec.loss( points = pos ):.6f} ({ time.time() - t0:.1f}s)" )
+        history.append( np.array( pos.raw ) )
+        print( f"  step { step }: loss = { rec.loss( points = pos ):.6f} ({ time.time() - t0:.1f}s)" )
 
-    print( f"reconstruction ({ nb_disks } disques, LBFGS, max_iter={ max_iter })..." )
-    rec.disks( radius = disk_radius, callback = callback, min_iter = min_iter )
-    print( f"reconstruction terminée en { time.time() - t0:.1f}s" )
-
-    if "x_prev" not in diag:
-        raise RuntimeError( "un seul pas capturé -- pas de direction à profiler (augmenter min_iter ?)" )
-
-    x0, x1 = diag[ "x_prev" ], diag[ "x" ]
-    step_dir = x1 - x0
+    print( f"reconstruction ({ nb_disks } disques, LBFGS, { nb_steps } pas forcés)..." )
+    rec.disks( radius = disk_radius, callback = callback, min_iter = nb_steps )
+    nb_captured = len( history ) - 1
+    print( f"{ nb_captured } pas obtenus en { time.time() - t0:.1f}s" )
 
     def scalar_loss( q ):
         return model.cost( model.wrap( q ) ).tensor
     loss_j = driver.jit( scalar_loss )
     grad_j = driver.jit( driver.grad( scalar_loss ) )
 
-    cost0 = float( loss_j( x0 ) )
-    g0 = np.asarray( grad_j( x0 ) )
-    linear = float( np.sum( g0 * step_dir ) )
-    # courbure = dérivée seconde directionnelle par différences finies CENTRÉES sur le gradient,
-    # directement en unités alpha (pas de renormalisation par la norme de step_dir nécessaire) :
-    # f'(alpha) = grad(x0 + alpha*step_dir) . step_dir, donc f''(0) ~ (f'(h) - f'(-h)) / (2h).
-    g_plus  = np.asarray( grad_j( x0 + fd_h * step_dir ) )
-    g_minus = np.asarray( grad_j( x0 - fd_h * step_dir ) )
-    quad = float( np.sum( ( g_plus - g_minus ) * step_dir ) ) / ( 2 * fd_h )
-
-    print( f"pas capturé : { diag[ 'step' ] }, loss={ cost0:.6f}, "
-           f"dérivée directionnelle={ linear:.4g}, courbure (différences finies)={ quad:.4g}" )
-
     alphas = np.linspace( *alpha_range, nb_alpha )
-    real_losses = np.array( [ float( loss_j( x0 + alpha * step_dir ) ) for alpha in alphas ] )
-    model_losses = cost0 + alphas * linear + 0.5 * alphas ** 2 * quad
+    profiles = []
+    for step in range( nb_captured ):
+        x0, x1 = history[ step ], history[ step + 1 ]
+        step_dir = x1 - x0
 
-    fig, ax = plt.subplots( figsize = ( 7, 5 ) )
-    ax.plot( alphas, real_losses, "o-", markersize = 3, label = "loss réelle" )
-    ax.plot( alphas, model_losses, "--", label = "modèle quadratique (Taylor local, diff. finies)" )
-    ax.axvline( 0.0, color = "gray", linewidth = 0.8 )
-    ax.axvline( 1.0, color = "gray", linewidth = 0.8, linestyle = ":", label = "alpha=1 (pas pris par LBFGS)" )
-    ax.set_xlabel( "alpha (le long du dernier pas RÉELLEMENT pris par LBFGS)" )
-    ax.set_ylabel( "loss" )
-    ax.legend()
-    ax.set_title( f"disques ({ nb_disks }) -- pas { diag[ 'step' ] } : loss réelle vs modèle quadratique" )
+        cost0 = float( loss_j( x0 ) )
+        g0 = np.asarray( grad_j( x0 ) )
+        linear = float( np.sum( g0 * step_dir ) )
+        # courbure = dérivée seconde directionnelle par différences finies CENTRÉES sur le
+        # gradient, directement en unités alpha (pas de renormalisation par la norme de step_dir
+        # nécessaire) : f'(alpha) = grad(x0 + alpha*step_dir) . step_dir, donc
+        # f''(0) ~ (f'(h) - f'(-h)) / (2h) -- NUMÉRIQUE, pas de Hessienne analytique pour ce modèle.
+        g_plus  = np.asarray( grad_j( x0 + fd_h * step_dir ) )
+        g_minus = np.asarray( grad_j( x0 - fd_h * step_dir ) )
+        quad = float( np.sum( ( g_plus - g_minus ) * step_dir ) ) / ( 2 * fd_h )
+
+        real_losses = np.array( [ float( loss_j( x0 + alpha * step_dir ) ) for alpha in alphas ] )
+        model_losses = cost0 + alphas * linear + 0.5 * alphas ** 2 * quad
+        print( f"  pas { step } : loss={ cost0:.6f}, dérivée directionnelle={ linear:.4g}, "
+               f"courbure (diff. finies)={ quad:.4g}" )
+        profiles.append( dict( step = step, cost0 = cost0, linear = linear, quad = quad,
+                              real_losses = real_losses, model_losses = model_losses ) )
+
+    ncols = 3
+    nrows = -( -len( profiles ) // ncols )
+    fig, axes = plt.subplots( nrows, ncols, figsize = ( 5 * ncols, 4 * nrows ), squeeze = False )
+    for ax, prof in zip( axes.ravel(), profiles ):
+        ax.plot( alphas, prof[ "real_losses" ], "o-", markersize = 2, label = "loss réelle" )
+        ax.plot( alphas, prof[ "model_losses" ], "--", label = "modèle quadratique" )
+        ax.axvline( 0.0, color = "gray", linewidth = 0.8 )
+        ax.axvline( 1.0, color = "gray", linewidth = 0.8, linestyle = ":", label = "alpha=1 (pas pris)" )
+        ax.set_title( f"pas { prof[ 'step' ] } (loss={ prof[ 'cost0' ]:.4g})" )
+        ax.set_xlabel( "alpha" )
+        ax.set_ylabel( "loss" )
+        if prof is profiles[ 0 ]:
+            ax.legend( fontsize = 8 )
+    for ax in axes.ravel()[ len( profiles ): ]:
+        ax.axis( "off" )
+    fig.suptitle( f"disques ({ nb_disks }) -- loss réelle vs modèle quadratique, { len( profiles ) } premiers pas" )
     fig.tight_layout()
     fig.savefig( out, dpi = 150 )
     print( f"figure sauvée: { out }" )
-    return dict( alphas = alphas, real_losses = real_losses, model_losses = model_losses, step = diag[ "step" ] )
+    return profiles
 
 
 def run_truncated( nb_alveoli = 1000, scale = 1.0, nb_diracs_final = 4992*4,
@@ -545,4 +852,4 @@ def run_truncated( nb_alveoli = 1000, scale = 1.0, nb_diracs_final = 4992*4,
 
 
 if __name__ == "__main__":
-    run_subspace()
+    run_two_phase_switch()

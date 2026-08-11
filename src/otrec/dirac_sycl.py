@@ -25,8 +25,8 @@ expose `diracs_cost_grad` avec le même contrat que `optimizers.FusedLBFGS` atte
 """
 import numpy as np
 
-from sdot import Tensor, Axis, CtShapeVar, driver
-from sdot.compilation.FfiCode import FfiCodeParallel
+from loom import Tensor, Axis, CtShapeVar, driver
+from loom.compilation.FfiCode import FfiCodeParallel
 from sdot.distributions.ProjectedSumOfDiracs import ProjectedSumOfDiracs
 
 from .Sinogram import Sinogram
@@ -63,7 +63,7 @@ def diracs_cost_grad( points, sinogram: Sinogram ):
     driver.call(
         FfiCodeParallel(
             name = "diracs_fused_cost_grad",
-            includes = [ "sdot/support/atomic_add.h" ],
+            includes = [ "loom/support/atomic_add.h" ],
             # zéro AVANT la boucle parallèle sur les angles : `grad` est PARTAGÉ (les points sont
             # les mêmes à tous les angles) et accumulé par `atomic_add` -- un buffer FFI fraîchement
             # alloué n'est pas garanti démarrer à zéro (voir `ProjectedSumOfDiracs::zero_position_grad`).
@@ -177,6 +177,101 @@ def diracs_cost_grad( points, sinogram: Sinogram ):
     return float( np.asarray( cost.value ).sum() ), np.asarray( grad.value )
 
 
+def diracs_cost( points, sinogram: Sinogram ):
+    """`cost` SEUL du modèle DIRACS -- MÊME formule et MÊME kernel de tri + balayage que
+    `diracs_cost_grad` ci-dessus, mais sans le calcul de gradient (pas de moment/barycentre par
+    dirac, pas de dispersion atomique) : pour les évaluations "coût seul" d'une recherche de pas
+    (voir `experiments.lung_alveoli._parabolic_bracket`), où le gradient serait de toute façon
+    jeté. Économise le calcul de `first_moment()` et les `atomic_add` par dirac -- le tri reste
+    identique (c'est lui qui domine le coût, voir `otplan1d-kernel-profile`).
+    """
+    pts = points if isinstance( points, Tensor ) else Tensor( points )
+
+    src = ProjectedSumOfDiracs( points = pts, normal = sinogram.normals_t,
+                                batch_axes = [ sinogram.num_angle ] )
+    dst = sinogram.batched_image().normalized_version()
+
+    sorted_idx = Tensor[ sinogram.num_angle, src.num_dirac, dict( dtype = int ) ]()
+    radix_tmp = Tensor[ sinogram.num_angle, src.num_dirac, dict( dtype = int ) ]()
+    cost = Tensor[ sinogram.num_angle ]()
+
+    driver.call(
+        FfiCodeParallel(
+            name = "diracs_fused_cost_only",
+            fwd_code = """
+            {
+                const SI n = SI( src.points.shape( 0 ) );
+                auto order = sorted_idx( batch_index );
+                auto tmp   = radix_tmp( batch_index );
+
+                auto s = src( batch_index );
+                auto proj = [&]( SI i ) { return s.position( i ); };
+
+                for ( SI i = 0; i < n; ++i ) {
+                    const float f = float( proj( i ) );
+                    uint32_t u = __builtin_bit_cast( uint32_t, f );
+                    u ^= ( u & 0x80000000u ) ? 0xFFFFFFFFu : 0x80000000u;
+                    order( i ) = ( SI( u >> 1 ) << 32 ) | SI( i );
+                }
+
+                constexpr int NB_BITS    = 8;
+                constexpr int NB_BUCKETS = 1 << NB_BITS;
+                constexpr int NB_PASSES  = 32 / NB_BITS;
+                static_assert( NB_PASSES % 2 == 0 );
+
+                auto radix_pass = [&]( auto &&from, auto &&to, int shift ) {
+                    SI count[ NB_BUCKETS ] = { 0 };
+                    for ( SI i = 0; i < n; ++i )
+                        ++count[ ( SI( from( i ) ) >> shift ) & ( NB_BUCKETS - 1 ) ];
+                    SI sum = 0;
+                    for ( int b = 0; b < NB_BUCKETS; ++b ) {
+                        const SI c = count[ b ];
+                        count[ b ] = sum;
+                        sum += c;
+                    }
+                    for ( SI i = 0; i < n; ++i ) {
+                        const SI key = from( i );
+                        const int b = ( key >> shift ) & ( NB_BUCKETS - 1 );
+                        to( count[ b ]++ ) = key;
+                    }
+                };
+                for ( int p = 0; p < NB_PASSES; ++p ) {
+                    const int shift = 32 + p * NB_BITS;
+                    if ( p % 2 == 0 ) radix_pass( order, tmp, shift );
+                    else              radix_pass( tmp, order, shift );
+                }
+
+                dst( batch_index ).with_defaults( [&]( auto &&img ) {
+                    using TF = DECAYED_TYPE_OF( img.values )::TF;
+                    const TF w = TF( 1 ) / TF( n );
+
+                    auto udp = img.udp_start();
+                    TF local_cost = 0;
+                    for ( SI k = 0; k < n; ++k ) {
+                        const SI di = order( k ) & 0xFFFFFFFFll;
+                        const TF p = proj( di );
+                        img.udp_cont( udp, w, [&]( auto &&item ) {
+                            local_cost += item.w2_dist( p );
+                        } );
+                    }
+                    cost( batch_index ) = local_cost;
+                } );
+            }
+            """,
+        ),
+        output_attributes = [ "cost", "sorted_idx", "radix_tmp" ],
+        scratch_attributes = [ "sorted_idx", "radix_tmp" ],
+        has_dynamic_capacity = False,
+        src = src,
+        dst = dst,
+        sorted_idx = sorted_idx,
+        radix_tmp = radix_tmp,
+        cost = cost,
+    )
+
+    return float( np.asarray( cost.value ).sum() )
+
+
 def subspace_hessian( points, directions, sinogram: Sinogram ):
     """`(H, b)` -- Hessienne `[MAX_DIRS,MAX_DIRS]` et gradient `[MAX_DIRS]` du modèle DIRACS
     RESTREINT au sous-espace engendré par `directions` (`[MAX_DIRS,n,2]`, zero-paddé au-delà du
@@ -222,7 +317,7 @@ def subspace_hessian( points, directions, sinogram: Sinogram ):
     driver.call(
         FfiCodeParallel(
             name = "diracs_subspace_hessian",
-            includes = [ "sdot/support/atomic_add.h" ],
+            includes = [ "loom/support/atomic_add.h" ],
             # zéro AVANT la boucle parallèle sur les angles -- `H`/`b` sont PARTAGÉS (les diracs
             # sont les mêmes à tous les angles) et accumulés par `atomic_add`, voir
             # `diracs_cost_grad.fwd_setup_code` pour la même raison sur `grad`.

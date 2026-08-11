@@ -4,7 +4,7 @@ from urllib.request import urlopen
 
 import numpy as np
 
-from applications.reconstruction.viz.live import LiveSimulation, serve
+from otrec.viz.live import LiveSimulation, serve
 
 
 def test_live_canvas_registers_and_publishes():

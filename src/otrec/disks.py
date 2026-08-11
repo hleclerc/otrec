@@ -20,7 +20,8 @@ chemin pris est celui, purement Jax, de `Image.try_update_otplan1d` (aucun kerne
 """
 import numpy as np
 
-from sdot import Image, Tensor, driver
+from loom import Tensor, driver
+from sdot import Image
 
 from .Sinogram import Sinogram
 

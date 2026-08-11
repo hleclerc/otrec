@@ -4,7 +4,7 @@ import numpy as np
 import time
 from pathlib import Path
 
-from sdot import Tensor
+from loom import Tensor
 
 # trois points : ce module est sous `benchmarks/optimizers/`, l'app est deux niveaux au-dessus
 from ...Reconstruction import Reconstruction

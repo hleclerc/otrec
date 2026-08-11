@@ -22,10 +22,11 @@ diracs puis raffiné en centres de disques.
 """
 from abc import ABC, abstractmethod
 
-from sdot import OtPlan1d, ProjectedSumOfDiracs, SumOfDiracs1d, Tensor
+from loom import Tensor
+from sdot import OtPlan1d, ProjectedSumOfDiracs, SumOfDiracs1d
 
 from .Sinogram import Sinogram
-from .dirac_sycl import diracs_cost_grad
+from .dirac_sycl import diracs_cost, diracs_cost_grad
 from .disks import DiskProjector
 
 
@@ -105,6 +106,12 @@ class DiracModel( Model ):
         bwd Jax) : ignoré. Consommé par `optimizers.FusedLBFGS` (voir
         `Reconstruction.diracs( backend = "sycl" )`)."""
         return diracs_cost_grad( points, self.sinogram )
+
+    def value( self, points ) -> float:
+        """`cost` SEUL (flottant Python), MÊME kernel SYCL fusionné que `value_and_grad` mais SANS
+        le calcul de gradient (`dirac_sycl.diracs_cost`) -- pour les évaluations "coût seul" d'une
+        recherche de pas, où le gradient serait de toute façon jeté."""
+        return diracs_cost( points, self.sinogram )
 
 
 class DiskModel( Model ):
