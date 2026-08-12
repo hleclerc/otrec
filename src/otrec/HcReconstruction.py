@@ -4,14 +4,15 @@
 pure Jax OR a standalone SYCL fused kernel (compiled with acpp, loaded via ctypes),
 solves via line search, and exports results.
 
-The SYCL kernel (`hc_ot_sycl.cpp`) is compiled ONCE into `hc_ot_sycl.dylib` and
-loaded at first use.  No `Tensor`, no `Image`, no `driver.call` — the API is pure
-numpy / raw float pointers.
+The SYCL kernel (`hc_ot_sycl.cpp`) is compiled ONCE into a shared library
+(`hc_ot_sycl.dylib` on macOS, `hc_ot_sycl.so` on Linux) and loaded at first use.
+No `Tensor`, no `Image`, no `driver.call` — the API is pure numpy / raw float pointers.
 """
 import ctypes
 import os
 import shutil
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -89,28 +90,50 @@ def _ot_all_angles(points, normals, sino_vals, bin_edges):
 
 _KERNEL_DIR = Path(__file__).resolve().parent
 _KERNEL_CPP  = _KERNEL_DIR / "hc_ot_sycl.cpp"
-_KERNEL_SO   = _KERNEL_DIR / "hc_ot_sycl.dylib"
+# Shared library extension: .dylib on macOS, .so on Linux (the container).
+_SO_EXT     = ".dylib" if sys.platform == "darwin" else ".so"
+_KERNEL_SO   = _KERNEL_DIR / f"hc_ot_sycl{_SO_EXT}"
 
 
 def _find_acpp():
     """Return the path to the `acpp` compiler binary.
 
-    Tries the loom cache first (where `adaptive_cpp` would have built it),
-    then falls back to `acpp` on PATH.
+    Locates an already-built acpp through loom's AdaptiveCpp cache (which honours
+    SDOT_CACHE_DIR in containers, plus XDG / macOS / /tmp fallbacks), then falls
+    back to `acpp` on PATH.
     """
-    cache = Path.home() / "Library" / "Caches" / "sdot" / "adaptivecpp"
-    if cache.is_dir():
-        # find the latest version
-        versions = sorted(cache.glob("v*"), reverse=True)
-        for vdir in versions:
-            acpp = vdir / "bin" / "acpp"
-            if acpp.is_file():
-                return str(acpp)
+    try:
+        from loom.compilation.adaptive_cpp import acpp_path, usable_backend_set
+    except ImportError:
+        return shutil.which("acpp") or "acpp"
+
+    # A "full" build (CUDA/HIP/...) also compiles the omp target we use here, so
+    # prefer it before the CPU-only "minimal" build.
+    for profile in ("full", "minimal"):
+        backends = usable_backend_set(profile, ())
+        if backends is not None:
+            p = acpp_path(profile, backends)
+            if p.is_file():
+                return str(p)
+
     return shutil.which("acpp") or "acpp"
 
 
+def _libomp_include_flags():
+    """Extra -I flags so <omp.h> resolves (macOS only — Homebrew libomp is keg-only).
+
+    Linux/acpp already provide OpenMP headers; the container ships libomp-20-dev.
+    """
+    if sys.platform != "darwin":
+        return []
+    for p in ("/opt/homebrew/opt/libomp/include", "/usr/local/opt/libomp/include"):
+        if Path(p).is_dir():
+            return ["-I", p]
+    return []
+
+
 def _compile_sycl_kernel():
-    """Compile hc_ot_sycl.cpp → .dylib (once; recompiles if source is newer)."""
+    """Compile hc_ot_sycl.cpp → shared lib (once; recompiles if source is newer)."""
     if _KERNEL_SO.exists() and _KERNEL_SO.stat().st_mtime >= _KERNEL_CPP.stat().st_mtime:
         return
 
@@ -118,7 +141,7 @@ def _compile_sycl_kernel():
     cmd = [
          acpp, "--acpp-targets=omp", "-std=c++20", "-O3", "-ffast-math",
         "-fPIC", "-shared",
-        "-I", "/opt/homebrew/opt/libomp/include",
+        *_libomp_include_flags(),
         "-o", str(_KERNEL_SO), str(_KERNEL_CPP),
     ]
     subprocess.run(cmd, check=True)
