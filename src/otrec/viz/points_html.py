@@ -18,6 +18,7 @@ Fichier UNIQUE et autonome (les points sont encodés en base64 directement dans 
 fichier annexe / pas de serveur -- s'ouvre directement depuis le disque, `file://`).
 """
 import base64
+import json
 
 import numpy as np
 
@@ -135,6 +136,9 @@ const RMIN = __RMIN__, RMAX = __RMAX__;      // bornes du slider, échelle log
 const SCALED = __SCALED__;
 const R0 = __R0__;                           // rayon monde uniforme (SCALED) ou 1
 const RADII = __RADII__;                     // Float32Array par point, aligné sur OFFSETS, ou null
+// sommets unitaires du marqueur (ex. un triangle -- voir `export_positions_html`'s `marker`),
+// ou null pour le disque historique (`draw()` dessine alors un cercle via `ctx.arc`).
+const MARKER_VERTS = __MARKER_VERTS__;
 
 const canvas = document.getElementById('c');
 const ctx = canvas.getContext('2d');
@@ -185,12 +189,28 @@ function draw() {
   ctx.fillStyle = dark ? '#ffffff' : '#000000';
   const path = new Path2D();
   const off = OFFSETS[frameIdx], cnt = COUNTS[frameIdx];
-  for (let i = 0; i < cnt; i++) {
-    const x = ox + pts[2 * (off + i)] * scale;
-    const y = oy - pts[2 * (off + i) + 1] * scale;
-    const r = RADII ? Math.max(RADII[off + i] * mult * scale, 0.4) : rUniform;
-    path.moveTo(x + r, y);
-    path.arc(x, y, r, 0, 2 * Math.PI);
+  if (MARKER_VERTS) {
+    // marqueur GÉNÉRIQUE : un polygone défini par MARKER_VERTS (sommets unitaires, ex. un
+    // triangle -- voir `export_positions_html`'s `marker`), mis à l'échelle par `r` et
+    // translaté sur chaque point. Pas de cas spécial "3 sommets" : n'importe quel polygone
+    // convexe ou non fonctionne.
+    for (let i = 0; i < cnt; i++) {
+      const x = ox + pts[2 * (off + i)] * scale;
+      const y = oy - pts[2 * (off + i) + 1] * scale;
+      const r = RADII ? Math.max(RADII[off + i] * mult * scale, 0.4) : rUniform;
+      path.moveTo(x + MARKER_VERTS[0][0] * r, y - MARKER_VERTS[0][1] * r);
+      for (let k = 1; k < MARKER_VERTS.length; k++)
+        path.lineTo(x + MARKER_VERTS[k][0] * r, y - MARKER_VERTS[k][1] * r);
+      path.closePath();
+    }
+  } else {
+    for (let i = 0; i < cnt; i++) {
+      const x = ox + pts[2 * (off + i)] * scale;
+      const y = oy - pts[2 * (off + i) + 1] * scale;
+      const r = RADII ? Math.max(RADII[off + i] * mult * scale, 0.4) : rUniform;
+      path.moveTo(x + r, y);
+      path.arc(x, y, r, 0, 2 * Math.PI);
+    }
   }
   ctx.fill(path);
 }
@@ -486,11 +506,21 @@ def _as_radii( radii, frames ):
     return None, per_frame
 
 
+#: markers built in -- unit vertices (x, y), circumradius 1, apex up. "circle" (default) draws
+#: the historical `ctx.arc` disc instead of a polygon (see `MARKER_SHAPES` used as a lookup only
+#: for the STRING convenience -- pass a raw vertex list to `marker` for any OTHER polygon, the
+#: JS side (`MARKER_VERTS`) doesn't special-case the vertex count, "3 points" is not baked in).
+MARKER_SHAPES = {
+    "circle": None,
+    "triangle": [ ( 0.0, 1.0 ), ( -0.8660254, -0.5 ), ( 0.8660254, -0.5 ) ],
+}
+
+
 def export_positions_html(
     positions, extent: float, out_path: str, point_radius: float | None = None,
     radius_range: tuple[float, float] | None = None, max_points: int = 500_000,
     title: str = "reconstruction", seed: int = 0, fps: float = 5.0,
-    radii = None,
+    radii = None, marker: str | list = "circle",
 ):
     """Écrit `out_path`, une page HTML autonome affichant `positions` comme un disque par point
     sur un <canvas> plein écran, avec un slider (échelle LOG) pour ajuster le rayon des disques
@@ -521,6 +551,13 @@ def export_positions_html(
     slider devient un facteur d'échelle (1 = rayon réel) -- `point_radius`/`radius_range` sont
     réinterprétés comme le facteur initial et ses bornes. `None` (défaut) : comportement
     historique, les points n'ont pas de rayon propre et le slider EST le rayon.
+
+    `marker` : la FORME dessinée par point -- `"circle"` (défaut, historique) ou `"triangle"`
+    (voir `MARKER_SHAPES`), ou directement une liste de sommets `[(x0,y0), (x1,y1), ...]`
+    (coordonnées UNITAIRES, cercle circonscrit de rayon 1, sommet en haut) pour un polygone
+    arbitraire -- le rendu JS (`MARKER_VERTS`) ne suppose PAS 3 sommets, un triangle n'est qu'un
+    cas particulier. Chaque sommet est mis à l'échelle par le rayon du point (`RADII`/`R0`,
+    comme le cercle historique) et translaté sur sa position.
     """
     frames = _as_frames( positions )
     uniform_r, per_point_r = ( None, None ) if radii is None else _as_radii( radii, frames )
@@ -555,6 +592,9 @@ def export_positions_html(
         flat_r = np.concatenate( per_point_r ).astype( np.float32 )
         radii_js = 'decodeF32("' + base64.b64encode( flat_r.tobytes() ).decode( "ascii" ) + '")'
 
+    verts = MARKER_SHAPES[ marker ] if isinstance( marker, str ) else marker
+    marker_js = "null" if verts is None else json.dumps( [ list( v ) for v in verts ] )
+
     # `point_radius` = position initiale du slider : un RAYON monde en mode absolu (0.1 par défaut,
     # valeur historique), un FACTEUR d'échelle en mode `radii` (1 = rayon réel).
     scaled = radii is not None
@@ -574,6 +614,7 @@ def export_positions_html(
         .replace( "__SCALED__", "true" if scaled else "false" )
         .replace( "__R0__", repr( float( uniform_r if uniform_r is not None else 1.0 ) ) )
         .replace( "__RADII__", radii_js )
+        .replace( "__MARKER_VERTS__", marker_js )
         .replace( "__N__", str( counts[ 0 ] ) )
         .replace( "__COUNTS__", counts_js )
         .replace( "__FPS__", repr( float( fps ) ) )
