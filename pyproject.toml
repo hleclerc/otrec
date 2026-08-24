@@ -10,6 +10,7 @@ dependencies = [
     "sdot",
     "loom",
     "numpy",
+    "optax",
 ]
 
 [tool.hatch.build.targets.wheel]
