@@ -49,7 +49,8 @@ class GradientDescent(Optimizer):
 def _two_phase_lbfgsb(fun, jac, x0_flat, shape_orig, *, max_iter: int, ftol: float,
                        min_iter: int, disp_tol: float | None, callback):
     """Coeur commun à `LBFGS` et `FusedLBFGS` : L-BFGS-B scipy en deux appels -- un premier à
-    `maxiter=min_iter` avec `ftol=gtol=0` (aucun arrêt anticipé possible, voir `LBFGS.min_iter`),
+    `maxiter=min_iter` avec `ftol=gtol=0` (voir `LBFGS.min_iter` : cela REND RARE un arrêt
+    anticipé, cela ne l'interdit pas),
     puis un second qui reprend `ftol` pour les pas restants, avec arrêt anticipé sur `disp_tol`
     (déplacement max d'un point) via `StopIteration` depuis le callback.
 
@@ -105,8 +106,15 @@ class LBFGS(Optimizer):
     satisfaits -- observé sur le modèle DISQUES, où la perte est quasi stationnaire le long de
     directions pourtant loin d'être optimales (un disque peut glisser sans changer le résidu
     tant qu'il ne chevauche personne). Mis en oeuvre en DEUX appels `scipy.optimize.minimize`
-    (voir `_two_phase_lbfgsb`) : un premier à `maxiter=min_iter` avec `ftol=gtol=0` (aucun arrêt
-    anticipé possible), puis un second qui reprend le `ftol` demandé pour les pas restants.
+    (voir `_two_phase_lbfgsb`) : un premier à `maxiter=min_iter` avec `ftol=gtol=0`, puis un
+    second qui reprend le `ftol` demandé pour les pas restants.
+
+    ATTENTION -- `min_iter` est un « au mieux », pas une garantie : `ftol=0` n'interdit pas un
+    arrêt anticipé, il le conditionne à une réduction EXACTEMENT nulle (le test `factr` de
+    L-BFGS-B), ce qu'une direction parfaitement plate atteint. Observé sur DISQUES : 9 pas pour
+    `min_iter=10`, scipy renvoyant `CONVERGENCE: RELATIVE REDUCTION OF F <= FACTR*EPSMCH`, et un
+    appel relancé depuis ce point ne fait plus aucun pas (point réellement stationnaire pour la
+    recherche linéaire). Ne pas asserter `nb_steps >= min_iter` : rien ne peut le promettre.
 
     `disp_tol` : pendant ce second appel, arrêt anticipé (levée de `StopIteration` depuis le
     callback -- supporté nativement par `scipy.optimize.minimize` depuis la 1.11) dès que le
