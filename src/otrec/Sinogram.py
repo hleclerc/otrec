@@ -21,7 +21,7 @@ directement consommable comme distribution cible d'un `OtPlan1d`.
 """
 import numpy as np
 
-from loom import ShapeVar, Axis, Tensor, Aggregate
+from loom import ShapeVar, Axis, Tensor, Aggregate, RealTensor
 from sdot import Image
 
 
@@ -32,7 +32,7 @@ class Sinogram( Aggregate ):
     num_angle : Axis[ "nb_angles" ]
     num_bin   : Axis[ "nb_bins" ]
 
-    values    : Tensor[ "num_angle", "num_bin" ]
+    values    : RealTensor[ "num_angle", "num_bin" ]
 
     def __init__( self, nb_angles: int, nb_bins: int, extent: float, detector_center: float = 0.0 ) -> None:
         if nb_angles < 1 or nb_bins < 1:
@@ -44,11 +44,13 @@ class Sinogram( Aggregate ):
         # de données n'est pas différentiée et se calcule le plus simplement en numpy)
         self.extent = float( extent )
         self.detector_center = float( detector_center )
-        # le compte de cases, côté HÔTE. Doublon apparent de la ShapeVar `nb_bins`, mais
-        # `nb_bins.value` est un `Tensor` (résolu depuis les tailles observées) : sous un `jit`, le
-        # lire depuis `bin_edges`/`bin_centers` produit un tracer, et `np.arange` ne peut plus rien
-        # en faire. La géométrie détecteur est de la donnée HÔTE (comme `dw`/`s_min`/`angles`
-        # ci-dessous) et doit le rester -- elle est constante pendant toute une optimisation.
+        # le compte de cases, côté HÔTE. Doublon apparent de la ShapeVar `nb_bins`, mais il est
+        # disponible ICI, avant que `values` ne soit posé : `nb_bins.value` se résout depuis les
+        # tailles observées, donc pas avant `__base_init__` plus bas -- alors que `dw`/`s_min` en
+        # ont besoin tout de suite. La géométrie détecteur est de la donnée HÔTE (comme
+        # `angles`/`normals`) et doit le rester : elle est constante pendant toute une optimisation.
+        # (`nb_bins.value` est désormais un `ShapeArray`, donc un compte hôte lui aussi -- ce n'est
+        # plus le `Tensor` traçable qui rendait ce doublon obligatoire.)
         self.nb_bins_host = int( nb_bins )
         self.dw = self.extent / nb_bins
         self.s_min = self.detector_center - self.extent / 2
@@ -60,7 +62,7 @@ class Sinogram( Aggregate ):
         # normales portent un axe coordonnée `_xy` (dim 2) PARTAGÉ, sur lequel la projection contracte
         # PAR RÉFÉRENCE (pas de `@` qui supposerait un ordre d'axes). L'axe des angles leur est propre.
         self._xy = Axis( ShapeVar( 2 ) )
-        self.normals_t = Tensor[ Axis( ShapeVar( int( nb_angles ) ) ), self._xy ]( self.normals )
+        self.normals_t = RealTensor[ Axis( ShapeVar( int( nb_angles ) ) ), self._xy ]( self.normals )
 
         # les valeurs démarrent à 0 ; `add_disk` les accumule
         self.__base_init__(
@@ -87,11 +89,11 @@ class Sinogram( Aggregate ):
         -- aucun `@`, donc aucune hypothèse d'ordre d'axes. Tout passe par l'algèbre `Tensor`, donc
         c'est DIFFÉRENTIABLE et compatible trace (ce qu'exige le gradient de la reconstruction).
         """
-        val = points if isinstance( points, Tensor ) else Tensor( points )
+        val = points if isinstance( points, Tensor ) else RealTensor( points )
         if val.rank != 2 or val.shape[ 1 ] != 2:
             raise ValueError( "points doit être de shape [ n, 2 ]" )
         # les points partagent l'axe `_xy` des normales ; leur axe « point » leur est propre
-        pts = Tensor[ Axis( ShapeVar() ), self._xy ]( val )
+        pts = RealTensor[ Axis( ShapeVar() ), self._xy ]( val )
         return self.normals_t.dot( pts, over = self._xy )                          # [ nb_angles, n ]
 
     # -- accumulation ------------------------------------------------------

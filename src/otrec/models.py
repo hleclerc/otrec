@@ -23,6 +23,7 @@ diracs puis raffiné en centres de disques.
 from abc import ABC, abstractmethod
 
 from loom import Tensor
+from loom import RealTensor
 from sdot import OtPlan1d, ProjectedSumOfDiracs, SumOfDiracs1d
 
 from .Sinogram import Sinogram
@@ -92,7 +93,7 @@ class DiracModel( Model ):
         self.with_barycenters = with_barycenters
 
     def cost( self, points ) -> Tensor:
-        pts = points if isinstance( points, Tensor ) else Tensor( points )
+        pts = points if isinstance( points, Tensor ) else RealTensor( points )
         src = ProjectedSumOfDiracs( points = pts, normal = self.sinogram.normals_t,
                                     batch_axes = [ self.sinogram.num_angle ] )
         dst = self.sinogram.batched_image()

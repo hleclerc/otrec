@@ -25,7 +25,7 @@ expose `diracs_cost_grad` avec le même contrat que `optimizers.FusedLBFGS` atte
 """
 import numpy as np
 
-from loom import Tensor, Axis, CtShapeVar, driver
+from loom import Tensor, Axis, CtShapeVar, driver, RealTensor, IntTensor
 from loom.compilation.FfiCode import FfiCodeParallel
 from sdot.distributions.ProjectedSumOfDiracs import ProjectedSumOfDiracs
 
@@ -43,7 +43,7 @@ def diracs_cost_grad( points, sinogram: Sinogram ):
     `grad` un tableau numpy `[n,2]` (même convention de signe que `jax.grad(model.cost)`, un pas
     de descente de gradient fait donc `points - lr * grad`).
     """
-    pts = points if isinstance( points, Tensor ) else Tensor( points )
+    pts = points if isinstance( points, Tensor ) else RealTensor( points )
 
     # `src`/`dst` normalisés à masse 1 -- exactement ce que fait `OtPlan1d.__init__` avant de
     # balayer (voir sa docstring) : sans ça la marche `udp_cont` (dont les prises `w` par dirac
@@ -55,10 +55,10 @@ def diracs_cost_grad( points, sinogram: Sinogram ):
                                 batch_axes = [ sinogram.num_angle ] )
     dst = sinogram.batched_image().normalized_version()
 
-    sorted_idx = Tensor[ sinogram.num_angle, src.num_dirac, dict( dtype = int ) ]()
-    radix_tmp = Tensor[ sinogram.num_angle, src.num_dirac, dict( dtype = int ) ]()
-    cost = Tensor[ sinogram.num_angle ]()
-    grad = Tensor[ src.num_dirac, src.proj_dim ]()
+    sorted_idx = IntTensor[ sinogram.num_angle, src.num_dirac ]()
+    radix_tmp = IntTensor[ sinogram.num_angle, src.num_dirac ]()
+    cost = RealTensor[ sinogram.num_angle ]()
+    grad = RealTensor[ src.num_dirac, src.proj_dim ]()
 
     driver.call(
         FfiCodeParallel(
@@ -185,15 +185,15 @@ def diracs_cost( points, sinogram: Sinogram ):
     jeté. Économise le calcul de `first_moment()` et les `atomic_add` par dirac -- le tri reste
     identique (c'est lui qui domine le coût, voir `otplan1d-kernel-profile`).
     """
-    pts = points if isinstance( points, Tensor ) else Tensor( points )
+    pts = points if isinstance( points, Tensor ) else RealTensor( points )
 
     src = ProjectedSumOfDiracs( points = pts, normal = sinogram.normals_t,
                                 batch_axes = [ sinogram.num_angle ] )
     dst = sinogram.batched_image().normalized_version()
 
-    sorted_idx = Tensor[ sinogram.num_angle, src.num_dirac, dict( dtype = int ) ]()
-    radix_tmp = Tensor[ sinogram.num_angle, src.num_dirac, dict( dtype = int ) ]()
-    cost = Tensor[ sinogram.num_angle ]()
+    sorted_idx = IntTensor[ sinogram.num_angle, src.num_dirac ]()
+    radix_tmp = IntTensor[ sinogram.num_angle, src.num_dirac ]()
+    cost = RealTensor[ sinogram.num_angle ]()
 
     driver.call(
         FfiCodeParallel(
@@ -293,8 +293,8 @@ def subspace_hessian( points, directions, sinogram: Sinogram ):
     ce modèle local, PAS une différence finie) -- somme de termes `w*e*e^T` en rang 1, donc `H` est
     PSD par construction (jamais de courbure négative à gérer côté solveur).
     """
-    pts = points if isinstance( points, Tensor ) else Tensor( points )
-    dirs = directions if isinstance( directions, Tensor ) else Tensor( directions )
+    pts = points if isinstance( points, Tensor ) else RealTensor( points )
+    dirs = directions if isinstance( directions, Tensor ) else RealTensor( directions )
 
     src = ProjectedSumOfDiracs( points = pts, normal = sinogram.normals_t,
                                 batch_axes = [ sinogram.num_angle ] )
@@ -308,11 +308,11 @@ def subspace_hessian( points, directions, sinogram: Sinogram ):
     dir_index_i = Axis( max_dirs, name = "dir_index_i" )
     dir_index_j = Axis( max_dirs, name = "dir_index_j" )
 
-    sorted_idx = Tensor[ sinogram.num_angle, src.num_dirac, dict( dtype = int ) ]()
-    radix_tmp = Tensor[ sinogram.num_angle, src.num_dirac, dict( dtype = int ) ]()
-    directions_t = Tensor[ dir_index_i, src.num_dirac, src.proj_dim ]( dirs )
-    H = Tensor[ dir_index_i, dir_index_j ]()
-    b = Tensor[ dir_index_i ]()
+    sorted_idx = IntTensor[ sinogram.num_angle, src.num_dirac ]()
+    radix_tmp = IntTensor[ sinogram.num_angle, src.num_dirac ]()
+    directions_t = RealTensor[ dir_index_i, src.num_dirac, src.proj_dim ]( dirs )
+    H = RealTensor[ dir_index_i, dir_index_j ]()
+    b = RealTensor[ dir_index_i ]()
 
     driver.call(
         FfiCodeParallel(

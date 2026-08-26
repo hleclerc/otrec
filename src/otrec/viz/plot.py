@@ -5,8 +5,6 @@ from pathlib import Path
 import numpy as np
 import time
 
-from loom import Tensor
-
 from ..optimizers import GradientDescent, GradientDescentLineSearch, LBFGS, Adam
 from ..Reconstruction import Reconstruction
 from ..Sinogram import Sinogram

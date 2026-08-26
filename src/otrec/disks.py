@@ -20,7 +20,7 @@ chemin pris est celui, purement Jax, de `Image.try_update_otplan1d` (aucun kerne
 """
 import numpy as np
 
-from loom import Tensor, driver
+from loom import Tensor, driver, RealTensor
 from sdot import Image
 
 from .Sinogram import Sinogram
@@ -149,7 +149,7 @@ class DiskProjector:
         La dernière tranche est complétée par des centres de remplissage neutralisés par un poids 0
         -- `driver.fold` exige des itérations de taille FIXE.
         """
-        pts = centers if isinstance( centers, Tensor ) else Tensor( centers )
+        pts = centers if isinstance( centers, Tensor ) else RealTensor( centers )
         if pts.rank != 2 or pts.shape[ 1 ] != 2:
             raise ValueError( "centers doit être de shape [ nb_disques, 2 ]" )
 
