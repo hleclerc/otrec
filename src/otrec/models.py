@@ -19,13 +19,20 @@ Les deux modèles disponibles s'appuient tous deux sur le transport optimal 1D s
 Ils exposent la même interface (`name`, `point_axis`, `cost`, `radii`, `floor`), si bien que
 `Reconstruction` les enchaîne sans jamais tester leur type : un même nuage peut être convergé en
 diracs puis raffiné en centres de disques.
+
+En 3D ( des `Radiographs`, une image 2D par angle ), `ProjectedDiracModel` joue le rôle de
+`DiracModel` avec un transport semi-discret 2D par angle ( `OtPlan` ) -- et ne propose que
+l'évaluation FUSIONNÉE coût + gradient ( voir sa docstring ).
 """
 from abc import ABC, abstractmethod
 
 from loom import Tensor
 from loom import RealTensor
-from sdot import OtPlan1d, ProjectedSumOfDiracs, SumOfDiracs1d
+import numpy as np
 
+from sdot import OtPlan, OtPlan1d, ProjectedSumOfDiracs, SumOfDiracs, SumOfDiracs1d
+
+from .Radiographs import Radiographs
 from .Sinogram import Sinogram
 from .dirac_sycl import diracs_cost, diracs_cost_grad
 from .disks import DiskProjector
@@ -156,6 +163,89 @@ class DiskModel( Model ):
         diracs condensent chaque case détecteur en son centre -- ce qui coûte la variance d'une
         case uniforme, `dw^2 / 12`, par angle."""
         return float( self.sinogram.nb_angles.value ) * self.sinogram.dw ** 2 / 12
+
+
+class ProjectedDiracModel( Model ):
+    """Les points sont des DIRACS 3D de masse égale, confrontés à des RADIOGRAPHIES
+    ( `Radiographs` ) : à chaque angle, leurs projections sur le détecteur sont transportées vers
+    l'image mesurée par un transport semi-discret 2D ( `OtPlan`, un diagramme de puissance par
+    angle ), et le coût est la somme sur les angles des `W_2^2`.
+
+    Le pendant 3D de `DiracModel`, avec une différence de nature : le transport 1D est EXACT ( un
+    tri ), le transport 2D est un AJUSTEMENT de poids ( `OtPlan._fit`, itératif ). D'où :
+
+    - le gradient par rapport aux points ne passe pas par l'autodiff mais par le théorème de
+      l'ENVELOPPE, aux poids ajustés : `2 m_i ( p_i - b_i )` sur le détecteur ( `b_i` le barycentre
+      de la cellule de Laguerre, voir `OtPlan.cost_and_position_grad` ), puis remonté en 3D par la
+      transposée de la projection ( `Radiographs.unproject_grad` ). Le modèle n'a donc qu'un
+      `value_and_grad` fusionné ( `FusedLBFGS` ) -- `cost` rend un flottant, pas un `Tensor` ;
+    - chaque angle est résolu par le Newton amorti de `OtPlan` ( `objective = "newton"` ), et les
+      poids ajustés sont GARDÉS d'une évaluation à l'autre ( `weights0` du prochain `OtPlan` ) :
+      des points qui bougent peu demandent des poids qui bougent peu, quelques pas suffisent. C'est
+      un cache, pas un état -- le résultat n'en dépend pas ;
+    - le point de DÉPART compte : des diracs tirés dans tout le cube projettent dans le vide, où le
+      transport est aussi mal conditionné qu'il est loin ( `Reconstruction.hull_points` tire dans
+      l'enveloppe visuelle, ce qui l'évite ) ;
+    - la radiographie reçoit un FOND ( `background`, en fraction de sa valeur moyenne ) : une boule
+      projetée est nulle hors de son ombre, et un dirac qui y tomberait aurait une cellule de mesure
+      nulle, donc aucun gradient ( voir `OtPlan` ). Le fond est ce qui le tire vers l'objet.
+    """
+
+    name = "diracs 3D"
+    point_axis = "num_dirac"
+    #: pas de `cost` traçable : seul `value_and_grad` existe ( voir la docstring )
+    fused_only = True
+
+    def __init__( self, radiographs: Radiographs, background: float = 1e-3, max_iter: int = 100,
+                  mass_tol: float = 1e-4, kernel_dtype = None ) -> None:
+        """`background`, `max_iter`, `mass_tol` : voir la docstring de la classe et `OtPlan`.
+        `mass_tol` est RELATIF à la masse d'un dirac ( `1 / n` ) -- et borné par ce que le noyau
+        sait : en FP32 ( le défaut ), l'aire d'une cellule n'est connue qu'à ~1e-5 près en relatif,
+        en dessous le Newton ne trouve plus de pas qui baisse le résidu."""
+        super().__init__( radiographs )
+        self.radiographs = radiographs
+        self.background = float( background )
+        self.max_iter = int( max_iter )
+        self.mass_tol = float( mass_tol )
+        self.kernel_dtype = kernel_dtype
+        nb_angles = int( radiographs.nb_angles.value )
+        self._images = [ radiographs.image( k, background = self.background ) for k in range( nb_angles ) ]
+        self._weights = [ None ] * nb_angles
+
+    def _plan( self, k, uv ):
+        """le transport de l'angle `k`, ajusté -- en repartant des poids de la dernière fois, ou de
+        zéro si ceux-ci vident déjà une cellule ( des points qui ont trop bougé )"""
+        # le NEWTON sur la fonctionnelle duale : un nombre de pas indépendant du nombre de diracs,
+        # et, d'une évaluation à l'autre ( `weights0` ), quelques pas seulement
+        kw = dict( objective = "newton", max_iter = self.max_iter, mass_tol = self.mass_tol,
+                   kernel_dtype = self.kernel_dtype, max_backtracks = 30 )
+        kw[ "mass_tol" ] = self.mass_tol / len( uv )
+        plan = OtPlan( SumOfDiracs( uv ), self._images[ k ], weights0 = self._weights[ k ], **kw )
+        self._weights[ k ] = plan.weights
+        return plan
+
+    def value_and_grad( self, points ):
+        """`( cost, grad )`, `grad` de shape `[ n, 3 ]` -- voir la docstring de la classe."""
+        pts = np.asarray( points, dtype = float ).reshape( -1, 3 )
+        proj = self.radiographs.project_points( pts )                           # [ nb_angles, n, 2 ]
+        cost, grad_uv = 0.0, np.zeros_like( proj )
+        for k in range( len( proj ) ):
+            c, g = self._plan( k, proj[ k ] ).cost_and_position_grad()
+            cost += c
+            grad_uv[ k ] = g
+        return cost, self.radiographs.unproject_grad( grad_uv )
+
+    def value( self, points ) -> float:
+        pts = np.asarray( points, dtype = float ).reshape( -1, 3 )
+        proj = self.radiographs.project_points( pts )
+        return float( sum( self._plan( k, proj[ k ] ).cost for k in range( len( proj ) ) ) )
+
+    def cost( self, points ):
+        """Le coût -- un FLOTTANT ( pas dérivable par autodiff, voir la docstring )."""
+        return self.value( points )
+
+    def wrap( self, raw ) -> Tensor:
+        return Tensor.wrap( raw, [ self.point_axis, "dim" ] )
 
 
 def sinogram_diracs( sinogram: Sinogram ) -> SumOfDiracs1d:

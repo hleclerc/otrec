@@ -26,7 +26,7 @@ import numpy as np
 from loom import Tensor, driver
 
 from .Sinogram import Sinogram
-from .models import DiracModel, DiskModel, Model
+from .models import DiracModel, DiskModel, Model, ProjectedDiracModel
 from .optimizers import FusedLBFGS, LBFGS
 from .viz.points_html import export_positions_html
 
@@ -61,6 +61,8 @@ class Reconstruction:
                   extent: float | None = None, seed: int = 0,
                   record: bool = False, record_every: int = 1, verbose: bool = False ) -> None:
         self.sinogram = sinogram
+        #: la dimension de l'espace des points : 2 pour un `Sinogram`, 3 pour des `Radiographs`
+        self.dim = int( getattr( sinogram, "world_dim", 2 ) )
 
         self.radius = radius
         self.nb_pixels = nb_pixels
@@ -112,8 +114,8 @@ class Reconstruction:
         if isinstance( points, Reconstruction ):
             points = points.points
         raw = points.raw if isinstance( points, Tensor ) else driver.array( np.asarray( points, dtype = float ) )
-        if raw.ndim != 2 or raw.shape[ 1 ] != 2:
-            raise ValueError( f"points doit être de shape [ n, 2 ], reçu { tuple( raw.shape ) }" )
+        if raw.ndim != 2 or raw.shape[ 1 ] != self.dim:
+            raise ValueError( f"points doit être de shape [ n, { self.dim } ], reçu { tuple( raw.shape ) }" )
         self.points = Tensor.wrap( raw, [ "num_point", "dim" ] )
         return self
 
@@ -138,10 +140,20 @@ class Reconstruction:
 
     def random_points( self, nb_points: int, extent: float | None = None,
                        seed: int | None = None ) -> "Reconstruction":
-        """`nb_points` positions 2D tirées uniformément dans [ -extent/2, extent/2 ]^2."""
+        """`nb_points` positions tirées uniformément dans [ -extent/2, extent/2 ]^dim."""
         rng = np.random.default_rng( self._next_seed( seed ) )
         e = float( extent if extent is not None else self.extent )
-        return self.set_points( ( rng.random( ( nb_points, 2 ) ) - 0.5 ) * e )
+        return self.set_points( ( rng.random( ( nb_points, self.dim ) ) - 0.5 ) * e )
+
+    def hull_points( self, nb_points: int, extent: float | None = None, seed: int | None = None,
+                     threshold: float = 0.0 ) -> "Reconstruction":
+        """`nb_points` positions tirées dans l'ENVELOPPE VISUELLE de la donnée ( les points dont
+        toutes les projections tombent sur de la matière -- voir `Radiographs.visual_hull_points` ),
+        au lieu du cube entier : le point de départ qu'un transport 2D par angle demande."""
+        hull = getattr( self.sinogram, "visual_hull_points", None )
+        if hull is None:
+            raise TypeError( f"{ type( self.sinogram ).__name__ } ne sait pas tirer dans son enveloppe visuelle" )
+        return self.set_points( hull( nb_points, seed = self._next_seed( seed ), extent = extent, threshold = threshold ) )
 
     def split( self, factor: int = 4, noise_frac: float = 0.05,
                seed: int | None = None ) -> "Reconstruction":
@@ -168,7 +180,11 @@ class Reconstruction:
 
     # -- modèles et optimiseur ---------------------------------------------
 
-    def dirac_model( self, with_barycenters: bool | None = None ) -> DiracModel:
+    def dirac_model( self, with_barycenters: bool | None = None, **kwargs ) -> Model:
+        """Le modèle diracs de la donnée : `DiracModel` sur un `Sinogram`, `ProjectedDiracModel`
+        sur des `Radiographs` ( `kwargs` -> ce dernier : `background`, `max_iter`, ... )."""
+        if self.dim == 3:
+            return ProjectedDiracModel( self.sinogram, **kwargs )
         return DiracModel( self.sinogram,
                            with_barycenters = self.with_barycenters if with_barycenters is None else with_barycenters )
 
@@ -242,7 +258,10 @@ class Reconstruction:
         """
         if self.points is None:
             raise ValueError( "aucun point de départ -- appeler `random_points` ou `set_points` d'abord" )
-        optimizer = optimizer if optimizer is not None else self.default_optimizer( max_iter, ftol, min_iter, disp_tol )
+        # un modèle qui n'a QUE l'évaluation fusionnée ( `ProjectedDiracModel` ) impose l'optimiseur
+        # qui la consomme
+        fused_only = getattr( model, "fused_only", False )
+        optimizer = optimizer if optimizer is not None else self.default_optimizer( max_iter, ftol, min_iter, disp_tol, fused = fused_only )
 
         p = self.points.raw
         loss_before = float( model.cost( model.wrap( p ) ) )
@@ -304,7 +323,11 @@ class Reconstruction:
         `benchmarks/execution_speed/benchmark_fused.py`) : force l'optimiseur par défaut à
         `FusedLBFGS` (voir `default_optimizer`), sauf si `optimizer` est fourni explicitement.
         """
-        model = self.dirac_model( with_barycenters )
+        model_kwargs = { k: kwargs.pop( k ) for k in ( "background", ) if k in kwargs }
+        model = self.dirac_model( with_barycenters, **model_kwargs )
+        # un modèle qui n'a QUE l'évaluation fusionnée ( `ProjectedDiracModel` ) impose son optimiseur
+        if getattr( model, "fused_only", False ):
+            backend = "sycl"
         if backend == "sycl":
             kwargs.setdefault( "optimizer", self.default_optimizer(
                 kwargs.get( "max_iter" ), kwargs.get( "ftol" ),

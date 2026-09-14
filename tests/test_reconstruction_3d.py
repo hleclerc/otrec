@@ -1,0 +1,181 @@
+"""Reconstruction 3D par DIRACS ( `models.ProjectedDiracModel` ) : l'inconnue est un nuage de
+points 3D dont les projections sur le détecteur, à chaque angle, doivent reproduire les
+RADIOGRAPHIES mesurées ( `Radiographs` ) -- le pendant de `test_reconstruction.py` avec, à chaque
+angle, un transport semi-discret 2D ( `OtPlan` ) à la place du transport 1D.
+
+Les radiographies sont celles de quelques boules ( `Radiographs.add_sphere` ), dont on connaît
+donc la vérité terrain.
+"""
+import numpy as np
+
+from otrec.Radiographs import Radiographs
+from otrec.Reconstruction import Reconstruction
+from sdot import set_kernel_dtype
+from loom.testing import Param, experiment, test
+
+set_kernel_dtype( "FP64" )
+
+CENTERS = np.array( [ [ 0.5, -0.3, 0.2 ], [ -0.6, 0.4, -0.5 ], [ 0.1, 0.5, 0.6 ] ] )
+RADIUS = 0.4
+
+
+def _sphere_radiographs( nb_angles = 3, nb_pixels = 40, extent = 4.0 ):
+    r = Radiographs( nb_angles = nb_angles, nb_u = nb_pixels, nb_v = nb_pixels, extent_u = extent )
+    for c in CENTERS:
+        r.add_sphere( c, RADIUS )
+    return r
+
+
+def _in_spheres( points, margin = 0.1 ):
+    """la fraction des points à moins de `RADIUS + margin` d'un centre"""
+    d = np.linalg.norm( points[ :, None, : ] - CENTERS[ None ], axis = 2 ).min( axis = 1 )
+    return float( ( d < RADIUS + margin ).mean() )
+
+
+if test( "points_in_the_spheres_give_a_small_loss" ):
+    # des diracs échantillonnant les boules reproduisent leurs radiographies : le coût doit être
+    # petit devant celui d'un nuage uniforme
+    radio = _sphere_radiographs()
+    rng = np.random.default_rng( 0 )
+    pts = []
+    while len( pts ) < 45:
+        c = CENTERS[ len( pts ) % 3 ]
+        q = rng.uniform( -RADIUS, RADIUS, 3 )
+        if q @ q < RADIUS ** 2:
+            pts.append( c + q )
+    pts = np.array( pts )
+
+    inside = Reconstruction( radio, pts ).loss()
+    uniform = Reconstruction( radio ).random_points( 45, seed = 1 ).loss()
+    assert np.isfinite( inside ) and inside < uniform / 5, ( inside, uniform )
+
+
+if test( "reconstruct_converges_in_3d" ):
+    # à partir d'un nuage uniforme, la descente ( L-BFGS sur le coût + gradient fusionnés, voir
+    # `ProjectedDiracModel.value_and_grad` ) doit faire chuter le coût et amener les diracs DANS les
+    # boules
+    radio = _sphere_radiographs()
+    rec = Reconstruction( radio ).random_points( 45, seed = 1 )
+    l0 = rec.loss()
+    assert _in_spheres( rec.positions ) < 0.5
+
+    rec.diracs( max_iter = 20 )
+    l1 = rec.loss()
+
+    assert l1 < l0 / 3, ( l0, l1 )
+    assert _in_spheres( rec.positions ) > 0.8, _in_spheres( rec.positions )
+
+    ( h, ) = rec.history
+    assert h[ "model" ] == "diracs 3D" and h[ "nb_points" ] == 45
+
+
+# -- ce qu'on REGARDE ------------------------------------------------------------------------
+#
+#   ./run experiment test_reconstruction_3d                                  # toutes
+#   ./run experiment "test_reconstruction_3d::rec 3D spheres" --nb-points=20000 --nb-angles=6
+#   ./run experiment "test_reconstruction_3d::rec 3D random spheres" --nb-spheres=12
+#
+# La descente en 3D, un pas par image : la page HTML du `Visualizer` de sdot ( les boules de la
+# vérité terrain en transparence, les diracs qui s'y rangent, le curseur pour rejouer ), et la
+# MÊME scène pour ParaView -- un `.pvd` qui rassemble un `.vtu` par pas, à ouvrir tel quel, le
+# rayon de chaque point en donnée de cellule ( `Glyph`, sphères, `Scale Array = radius` ). Plus la
+# courbe de convergence. Sur cette machine ( 16 coeurs chargés ), `OMP_NUM_THREADS=4` divise par
+# dix le coût d'un petit kernel -- voir `notes/2026-09-14-reconstruction-3d.md`. Ce que ça coûte :
+# ~150 à 300 s par pas à 20 000 diracs et 6 angles ( les ajustements par angle repartent souvent
+# du Voronoï, ~50 pas de Newton chacun ), les sorties étant réécrites tous les dix pas.
+
+def _random_spheres( nb_spheres, seed, extent = 2.2 ):
+    """`nb_spheres` boules de rayons variés, DISJOINTES, dans le cube `[ -extent/2, extent/2 ]^3`"""
+    rng = np.random.default_rng( seed )
+    centers, radii = [], []
+    while len( centers ) < nb_spheres:
+        r = rng.uniform( 0.15, 0.45 )
+        c = rng.uniform( -extent / 2 + r, extent / 2 - r, 3 )
+        if all( np.linalg.norm( c - c2 ) > r + r2 + 0.05 for c2, r2 in zip( centers, radii ) ):
+            centers.append( c ); radii.append( r )
+    return np.array( centers ), np.array( radii )
+
+
+def _run_3d( p, centers, radii, stem ):
+    """Commun aux expériences : les radiographies des boules, la descente enregistrée, les sorties."""
+    import time
+    from sdot import Visualizer, write_convergence_html
+
+    radio = Radiographs( nb_angles = p.nb_angles, nb_u = p.nb_pixels, nb_v = p.nb_pixels, extent_u = 4.0 )
+    for c, r in zip( centers, radii ):
+        radio.add_sphere( c, r )
+
+    rec = Reconstruction( radio, verbose = True )
+    if p.init == "hull":
+        rec.hull_points( p.nb_points, seed = p.seed )
+    else:
+        rec.random_points( p.nb_points, seed = p.seed )
+
+    def in_spheres( pts, margin = 0.05 ):
+        d = np.linalg.norm( pts[ :, None, : ] - centers[ None ], axis = 2 ) - radii[ None, : ]
+        return float( ( d.min( axis = 1 ) < margin ).mean() )
+
+    viz = Visualizer( title = f"reconstruction 3D -- { p.nb_points } diracs, { p.nb_angles } angles" )
+    fractions, times, t0 = [], [], time.perf_counter()
+    model = rec.dirac_model( background = p.background, kernel_dtype = p.kernel )
+
+    def write_outputs():
+        viz.write_html( p.out_dir / f"{ stem }.html" )
+        viz.write_vtk( p.out_dir / f"{ stem }.vtk" )
+        write_convergence_html(
+            { "diracs dans les boules ( fraction )": list( zip( times, fractions ) ) },
+            p.out_dir / f"{ stem }_convergence.html",
+            title = f"reconstruction 3D -- { p.nb_points } diracs", xlabel = "temps ( s )", ylabel = "fraction", log_y = False )
+
+    def snap( step, pts ):
+        pts = np.asarray( pts )
+        if step >= 0 and ( step + 1 ) % p.record_every:
+            return
+        if step >= 0:
+            viz.new_frame( step + 1 )
+        viz.add_points( pts, radius = 0.01, color = "#e0a030" )
+        for c, r in zip( centers, radii ):
+            viz.add_points( c[ None ], radius = r, color = "#4080c0", opacity = 0.2 )
+        fractions.append( in_spheres( pts ) )
+        times.append( time.perf_counter() - t0 )
+        print( f"  pas { step + 1 }, { times[ -1 ]:.0f} s, { fractions[ -1 ] * 100:.1f} % dans les boules", flush = True )
+        # une descente longue s'écrit EN COURS DE ROUTE : ce qui est fait est déjà regardable
+        if len( fractions ) % 10 == 0:
+            write_outputs()
+    # `min_iter = max_iter` : tous les pas demandés, pas un arrêt de scipy sur un `ftol` que le
+    # bruit des ajustements internes ( `mass_tol` ) déclenche trop tôt -- c'est une expérience
+    rec.run( model, max_iter = p.max_iter, min_iter = p.max_iter, callback = snap, label = "diracs 3D" )
+
+    h = rec.history[ -1 ]
+    print( f"  { rec.nb_points } diracs, { p.nb_angles } angles, { h[ 'nb_steps' ] } pas en { h[ 'time' ]:.0f} s : "
+           f"perte { h[ 'loss_before' ]:.3e} -> { h[ 'loss_after' ]:.3e}, "
+           f"{ in_spheres( rec.positions ) * 100:.1f} % des diracs dans les boules" )
+    p.results[ "loss_before" ], p.results[ "loss_after" ] = h[ "loss_before" ], h[ "loss_after" ]
+    p.results[ "in_spheres" ] = in_spheres( rec.positions )
+    p.results[ "time" ] = h[ "time" ]
+
+    write_outputs()
+    np.savez( p.out_dir / f"{ stem }_final.npz", positions = rec.positions, centers = centers, radii = radii )
+    return rec
+
+
+_PARAMS = dict(
+    nb_points    = Param( 10000, help = "nombre de diracs" ),
+    nb_angles    = Param( 6, help = "nombre d'angles de projection" ),
+    nb_pixels    = Param( 128, help = "pixels par côté du détecteur" ),
+    max_iter     = Param( 30, help = "nombre de pas de L-BFGS" ),
+    record_every = Param( 1, help = "une image toutes les k pas" ),
+    background   = Param( 1e-3, help = "fond ajouté aux radiographies, en fraction de la moyenne" ),
+    init         = Param( "hull", help = "point de départ : `hull` ( l'enveloppe visuelle ) ou `cube`" ),
+    kernel       = Param( "FP32", help = "le flottant du noyau ( FP32 ou FP64 )" ),
+    seed         = Param( 1, help = "graine du tirage" ),
+)
+
+if p := experiment( "rec 3D spheres", **_PARAMS ):
+    # les trois boules des tests, à grande échelle
+    _run_3d( p, CENTERS, np.full( len( CENTERS ), RADIUS ), "rec_3d_spheres" )
+
+if p := experiment( "rec 3D random spheres", nb_spheres = Param( 8, help = "nombre de boules" ), **_PARAMS ):
+    # un fantôme moins symétrique : des boules de rayons variés, tirées au hasard
+    centers, radii = _random_spheres( p.nb_spheres, p.seed + 100 )
+    _run_3d( p, centers, radii, "rec_3d_random_spheres" )
