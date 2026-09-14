@@ -50,6 +50,23 @@ if test( "points_in_the_spheres_give_a_small_loss" ):
     assert np.isfinite( inside ) and inside < uniform / 5, ( inside, uniform )
 
 
+if test( "multiscale_refines_up_to_the_requested_count_in_3d" ):
+    # par étages : 40 -> 160 -> 320 diracs ( le dernier sous-échantillonné ), chaque étage
+    # repartant du nuage convergé du précédent ( `Reconstruction.multiscale`, l'enveloppe visuelle
+    # comme point de départ ) ; le modèle 3D suit le changement de taille ( ses poids chauds sont
+    # abandonnés à chaque étage ) et la perte finale est petite
+    radio = _sphere_radiographs()
+    rec = Reconstruction( radio )
+    stages = []
+    rec.multiscale( 320, nb_points_init = 40, factor = 4, max_iter = 8,
+                    stage_callback = lambda stage, n, pts: stages.append( n ) )
+    assert stages == [ 40, 160, 320 ], stages
+    assert rec.nb_points == 320
+    assert [ h[ "nb_points" ] for h in rec.history ] == stages
+    assert rec.history[ -1 ][ "loss_after" ] < rec.history[ 0 ][ "loss_before" ] / 3
+    assert _in_spheres( rec.positions ) > 0.85, _in_spheres( rec.positions )
+
+
 if test( "reconstruct_converges_in_3d" ):
     # à partir d'un nuage uniforme, la descente ( L-BFGS sur le coût + gradient fusionnés, voir
     # `ProjectedDiracModel.value_and_grad` ) doit faire chuter le coût et amener les diracs DANS les
@@ -96,8 +113,11 @@ def _random_spheres( nb_spheres, seed, extent = 2.2 ):
     return np.array( centers ), np.array( radii )
 
 
-def _run_3d( p, centers, radii, stem ):
-    """Commun aux expériences : les radiographies des boules, la descente enregistrée, les sorties."""
+def _run_3d( p, centers, radii, stem, multiscale = None ):
+    """Commun aux expériences : les radiographies des boules, la descente enregistrée, les sorties.
+
+    `multiscale = ( nb_points_init, factor )` : la descente par étages ( `Reconstruction.multiscale` )
+    au lieu d'un nuage tiré d'un coup à `nb_points`."""
     import time
     from sdot import Visualizer, write_convergence_html
 
@@ -105,25 +125,27 @@ def _run_3d( p, centers, radii, stem ):
     for c, r in zip( centers, radii ):
         radio.add_sphere( c, r )
 
-    rec = Reconstruction( radio, verbose = True )
+    rec = Reconstruction( radio, verbose = True, seed = p.seed )
+    n0 = multiscale[ 0 ] if multiscale else p.nb_points
     if p.init == "hull":
-        rec.hull_points( p.nb_points, seed = p.seed )
+        rec.hull_points( n0, seed = p.seed )
     else:
-        rec.random_points( p.nb_points, seed = p.seed )
+        rec.random_points( n0, seed = p.seed )
 
     def in_spheres( pts, margin = 0.05 ):
         d = np.linalg.norm( pts[ :, None, : ] - centers[ None ], axis = 2 ) - radii[ None, : ]
         return float( ( d.min( axis = 1 ) < margin ).mean() )
 
     viz = Visualizer( title = f"reconstruction 3D -- { p.nb_points } diracs, { p.nb_angles } angles" )
-    fractions, times, t0 = [], [], time.perf_counter()
+    fractions, times, counts, t0 = [], [], [], time.perf_counter()
     model = rec.dirac_model( background = p.background, kernel_dtype = p.kernel )
 
     def write_outputs():
         viz.write_html( p.out_dir / f"{ stem }.html" )
         viz.write_vtk( p.out_dir / f"{ stem }.vtk" )
         write_convergence_html(
-            { "diracs dans les boules ( fraction )": list( zip( times, fractions ) ) },
+            { "diracs dans les boules ( fraction )": list( zip( times, fractions ) ),
+              "nombre de diracs / nombre final": list( zip( times, [ c / p.nb_points for c in counts ] ) ) },
             p.out_dir / f"{ stem }_convergence.html",
             title = f"reconstruction 3D -- { p.nb_points } diracs", xlabel = "temps ( s )", ylabel = "fraction", log_y = False )
 
@@ -131,28 +153,41 @@ def _run_3d( p, centers, radii, stem ):
         pts = np.asarray( pts )
         if step >= 0 and ( step + 1 ) % p.record_every:
             return
-        if step >= 0:
-            viz.new_frame( step + 1 )
+        if fractions:                                     # la toute première image existe déjà
+            viz.new_frame( len( fractions ) )
         viz.add_points( pts, radius = 0.01, color = "#e0a030" )
         for c, r in zip( centers, radii ):
             viz.add_points( c[ None ], radius = r, color = "#4080c0", opacity = 0.2 )
         fractions.append( in_spheres( pts ) )
+        counts.append( len( pts ) )
         times.append( time.perf_counter() - t0 )
-        print( f"  pas { step + 1 }, { times[ -1 ]:.0f} s, { fractions[ -1 ] * 100:.1f} % dans les boules", flush = True )
+        print( f"  image { len( fractions ) - 1 } ( pas { step + 1 }, { len( pts ) } diracs ), { times[ -1 ]:.0f} s, "
+               f"{ fractions[ -1 ] * 100:.1f} % dans les boules", flush = True )
         # une descente longue s'écrit EN COURS DE ROUTE : ce qui est fait est déjà regardable
         if len( fractions ) % 10 == 0:
             write_outputs()
-    # `min_iter = max_iter` : tous les pas demandés, pas un arrêt de scipy sur un `ftol` que le
-    # bruit des ajustements internes ( `mass_tol` ) déclenche trop tôt -- c'est une expérience
-    rec.run( model, max_iter = p.max_iter, min_iter = p.max_iter, callback = snap, label = "diracs 3D" )
 
-    h = rec.history[ -1 ]
-    print( f"  { rec.nb_points } diracs, { p.nb_angles } angles, { h[ 'nb_steps' ] } pas en { h[ 'time' ]:.0f} s : "
-           f"perte { h[ 'loss_before' ]:.3e} -> { h[ 'loss_after' ]:.3e}, "
+    if multiscale:
+        # par étages : chaque étage s'arrête quand scipy ne progresse plus ( `ftol` ) ou à
+        # `max_iter` -- la « quasi-convergence » qui suffit avant de raffiner
+        rec.multiscale( p.nb_points, nb_points_init = multiscale[ 0 ], factor = multiscale[ 1 ],
+                        model = model, max_iter = p.max_iter, callback = snap )
+    else:
+        # `min_iter = max_iter` : tous les pas demandés, pas un arrêt de scipy sur un `ftol` que le
+        # bruit des ajustements internes ( `mass_tol` ) déclenche trop tôt -- c'est une expérience
+        rec.run( model, max_iter = p.max_iter, min_iter = p.max_iter, callback = snap, label = "diracs 3D" )
+
+    stages = rec.history
+    total = sum( h[ "time" ] for h in stages )
+    print( f"  { rec.nb_points } diracs, { p.nb_angles } angles, { len( stages ) } étage(s), "
+           f"{ sum( h[ 'nb_steps' ] for h in stages ) } pas en { total:.0f} s : "
+           f"perte { stages[ 0 ][ 'loss_before' ]:.3e} -> { stages[ -1 ][ 'loss_after' ]:.3e}, "
            f"{ in_spheres( rec.positions ) * 100:.1f} % des diracs dans les boules" )
-    p.results[ "loss_before" ], p.results[ "loss_after" ] = h[ "loss_before" ], h[ "loss_after" ]
+    for h in stages:
+        print( f"    { h[ 'label' ] } : { h[ 'nb_steps' ] } pas, { h[ 'time' ]:.0f} s, perte { h[ 'loss_before' ]:.3e} -> { h[ 'loss_after' ]:.3e}" )
+    p.results[ "loss_before" ], p.results[ "loss_after" ] = stages[ 0 ][ "loss_before" ], stages[ -1 ][ "loss_after" ]
     p.results[ "in_spheres" ] = in_spheres( rec.positions )
-    p.results[ "time" ] = h[ "time" ]
+    p.results[ "time" ] = total
 
     write_outputs()
     np.savez( p.out_dir / f"{ stem }_final.npz", positions = rec.positions, centers = centers, radii = radii )
@@ -179,3 +214,18 @@ if p := experiment( "rec 3D random spheres", nb_spheres = Param( 8, help = "nomb
     # un fantôme moins symétrique : des boules de rayons variés, tirées au hasard
     centers, radii = _random_spheres( p.nb_spheres, p.seed + 100 )
     _run_3d( p, centers, radii, "rec_3d_random_spheres" )
+
+if p := experiment( "rec 3D multiscale",
+                    nb_points_init = Param( 500, help = "diracs du premier étage" ),
+                    factor         = Param( 4, help = "enfants par dirac à chaque raffinement" ),
+                    nb_spheres     = Param( 8, help = "nombre de boules" ),
+                    **{ **_PARAMS, "nb_points": Param( 32000, help = "nombre de diracs FINAL" ),
+                        "max_iter": Param( 30, help = "pas de L-BFGS au plus PAR ÉTAGE" ) } ):
+    # PAR ÉTAGES ( `Reconstruction.multiscale` ) : peu de diracs d'abord, convergés, puis chacun
+    # remplacé par `factor` enfants bruités, reconvergés -- jusqu'au nombre demandé. Chaque étage
+    # part d'un nuage déjà bien placé, donc ses transports par angle démarrent près de leur
+    # solution : c'est ce qui rend un gros nuage abordable, là où le tirer d'un coup fait repartir
+    # chaque ajustement du Voronoï ( voir la note ). Une image par pas, tous étages confondus --
+    # le nombre de diracs change d'un étage à l'autre, la courbe le montre.
+    centers, radii = _random_spheres( p.nb_spheres, p.seed + 100 )
+    _run_3d( p, centers, radii, "rec_3d_multiscale", multiscale = ( p.nb_points_init, p.factor ) )

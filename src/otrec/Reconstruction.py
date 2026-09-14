@@ -371,13 +371,22 @@ class Reconstruction:
         bonne structure GLOBALE et n'a plus qu'à raffiner LOCALEMENT : bien mieux conditionné.
 
         Part du nuage courant s'il y en a un (on peut donc raffiner un résultat existant), sinon
-        d'un tirage uniforme de `nb_points_init` points. `optimizer_factory( n )`, s'il est fourni,
-        donne l'optimiseur de l'étage à `n` points ; `stage_callback( stage, n, points )` est appelé
-        après convergence de chaque étage, avant le split suivant.
+        d'un tirage de `nb_points_init` points -- dans l'enveloppe visuelle quand la donnée sait
+        la tirer (`hull_points`, des `Radiographs`), uniforme sinon. `optimizer_factory( n )`, s'il
+        est fourni, donne l'optimiseur de l'étage à `n` points ; `stage_callback( stage, n, points )`
+        est appelé après convergence de chaque étage, avant le split suivant.
+
+        En 3D c'est aussi ce qui rend les gros nuages abordables : chaque étage part d'un nuage
+        déjà bien placé, donc ses ajustements par angle (`ProjectedDiracModel`) démarrent près
+        de leur solution -- là où un nuage tiré d'un coup à `nb_points_final` les fait repartir du
+        Voronoï à chaque évaluation.
         """
         model = model or self.default_model()
         if self.points is None:
-            self.random_points( nb_points_init )
+            if getattr( self.sinogram, "visual_hull_points", None ) is not None:
+                self.hull_points( nb_points_init )
+            else:
+                self.random_points( nb_points_init )
 
         stage = 0
         while True:

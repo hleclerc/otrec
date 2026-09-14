@@ -220,7 +220,11 @@ class ProjectedDiracModel( Model ):
         kw = dict( objective = "newton", max_iter = self.max_iter, mass_tol = self.mass_tol,
                    kernel_dtype = self.kernel_dtype, max_backtracks = 30 )
         kw[ "mass_tol" ] = self.mass_tol / len( uv )
-        plan = OtPlan( SumOfDiracs( uv ), self._images[ k ], weights0 = self._weights[ k ], **kw )
+        # un nuage qui a changé de TAILLE ( un étage de `Reconstruction.multiscale` ) repart de zéro
+        w0 = self._weights[ k ]
+        if w0 is not None and len( w0 ) != len( uv ):
+            w0 = None
+        plan = OtPlan( SumOfDiracs( uv ), self._images[ k ], weights0 = w0, **kw )
         self._weights[ k ] = plan.weights
         return plan
 
