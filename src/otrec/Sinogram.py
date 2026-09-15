@@ -130,6 +130,18 @@ class Sinogram( Aggregate ):
         self.values = self.values + contribution
         return self
 
+    def blurred( self, sigma: float ) -> "Sinogram":
+        """Le même sinogramme FLOUTÉ d'une gaussienne d'écart-type `sigma` ( unités monde ),
+        profil par profil -- voir `Radiographs.blurred` pour ce que le flou achète."""
+        from scipy.ndimage import gaussian_filter1d
+        out = Sinogram( nb_angles = int( self.nb_angles.value ), nb_bins = self.nb_bins_host,
+                        extent = self.extent, detector_center = self.detector_center )
+        vals = np.asarray( self.values )
+        if sigma > 0:
+            vals = gaussian_filter1d( vals, sigma = sigma / self.dw, axis = 1, mode = "constant" )
+        out.values = vals
+        return out
+
     # -- consommation ------------------------------------------------------
 
     def image( self, k: int ) -> Image:

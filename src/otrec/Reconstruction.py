@@ -358,6 +358,38 @@ class Reconstruction:
             self.split( factor = split_before, noise_frac = split_noise_frac )
         return self.run( self.disk_model( radius, nb_pixels, max_chunk_elems ), **kwargs )
 
+    def anneal_blur( self, blurs = ( 1.0, 0.25, 0.06, 0.015, 0.0 ), model_kwargs = None,
+                     stage_callback = None, **kwargs ) -> "Reconstruction":
+        """Des projections FLOUTÉES d'abord, resserrées étage par étage : pour chaque `sigma` de
+        `blurs` ( en fraction de l'étendue du détecteur ; `0` = la donnée telle quelle ), le modèle
+        diracs de la donnée floutée ( `Radiographs.blurred` / `Sinogram.blurred` ) est descendu depuis
+        le nuage courant. `kwargs` -> `run` ( `max_iter`, ... ), `model_kwargs` -> `dirac_model`.
+
+        Pourquoi : les projections ont des ZÉROS, et tout ce qui y projette est sans cellule ni
+        gradient -- le transport 2D par angle est alors aussi mal conditionné qu'il est loin. À
+        l'échelle du domaine, la donnée floutée est une bosse positive partout et le nuage s'y
+        range en douceur ; chaque étage suivant part d'un nuage déjà à sa place pour une cible à
+        peine plus nette. Mesuré ( 3000 diracs, `OtPlan` Newton ) : floutée à l'échelle du domaine,
+        la cible se résout en 6 à 11 pas depuis N'IMPORTE quel nuage ( l'enveloppe visuelle, le
+        cube, ou même hors du détecteur -- la similitude de `OtPlan._similarity_start` s'en
+        charge ), là où la donnée nette demande 34 pas depuis l'enveloppe et ne converge pas du
+        tout depuis le cube.
+        """
+        blurred = getattr( self.sinogram, "blurred", None )
+        if blurred is None:
+            raise TypeError( f"{ type( self.sinogram ).__name__ } ne sait pas se flouter" )
+        data = self.sinogram
+        try:
+            for stage, sigma in enumerate( blurs ):
+                self.sinogram = blurred( sigma * getattr( data, "extent_u", data.extent ) ) if sigma > 0 else data
+                model = self.dirac_model( **( model_kwargs or {} ) )
+                self.run( model, label = f"{ model.name } flou { sigma:g}", **kwargs )
+                if stage_callback is not None:
+                    stage_callback( stage, sigma, self.points )
+        finally:
+            self.sinogram = data
+        return self
+
     def multiscale( self, nb_points_final: int, nb_points_init: int = 1000, factor: int = 4,
                     noise_frac: float = 0.05, model: Model | None = None,
                     optimizer_factory = None, stage_callback = None, **kwargs ) -> "Reconstruction":

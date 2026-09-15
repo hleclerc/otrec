@@ -67,6 +67,22 @@ if test( "multiscale_refines_up_to_the_requested_count_in_3d" ):
     assert _in_spheres( rec.positions ) > 0.85, _in_spheres( rec.positions )
 
 
+if test( "blur_annealing_reconstructs_from_the_cube" ):
+    # depuis un nuage tiré dans tout le CUBE ( le cas que la donnée nette ne sait pas résoudre :
+    # ses zéros ), les projections floutées d'abord ( `Reconstruction.anneal_blur` ) puis
+    # resserrées amènent les diracs dans les boules
+    radio = _sphere_radiographs()
+    rec = Reconstruction( radio ).random_points( 60, seed = 1 )
+    assert _in_spheres( rec.positions ) < 0.5
+    sigmas = []
+    rec.anneal_blur( blurs = ( 1.0, 0.25, 0.06, 0.0 ), max_iter = 10,
+                     stage_callback = lambda stage, sigma, pts: sigmas.append( sigma ) )
+    assert sigmas == [ 1.0, 0.25, 0.06, 0.0 ]
+    assert [ h[ "label" ] for h in rec.history ] == [ "diracs 3D flou 1", "diracs 3D flou 0.25", "diracs 3D flou 0.06", "diracs 3D flou 0" ]
+    assert _in_spheres( rec.positions ) > 0.8, _in_spheres( rec.positions )
+    assert rec.sinogram is radio                      # la donnée nette est rendue
+
+
 if test( "reconstruct_converges_in_3d" ):
     # à partir d'un nuage uniforme, la descente ( L-BFGS sur le coût + gradient fusionnés, voir
     # `ProjectedDiracModel.value_and_grad` ) doit faire chuter le coût et amener les diracs DANS les
@@ -113,11 +129,13 @@ def _random_spheres( nb_spheres, seed, extent = 2.2 ):
     return np.array( centers ), np.array( radii )
 
 
-def _run_3d( p, centers, radii, stem, multiscale = None ):
+def _run_3d( p, centers, radii, stem, multiscale = None, blurs = None ):
     """Commun aux expériences : les radiographies des boules, la descente enregistrée, les sorties.
 
     `multiscale = ( nb_points_init, factor )` : la descente par étages ( `Reconstruction.multiscale` )
-    au lieu d'un nuage tiré d'un coup à `nb_points`."""
+    au lieu d'un nuage tiré d'un coup à `nb_points`. `blurs` : d'abord les projections FLOUTÉES,
+    resserrées étage par étage ( `Reconstruction.anneal_blur` ), sur le nuage de départ -- puis le
+    raffinement par étages s'il est demandé, sur la donnée nette."""
     import time
     from sdot import Visualizer, write_convergence_html
 
@@ -167,12 +185,18 @@ def _run_3d( p, centers, radii, stem, multiscale = None ):
         if len( fractions ) % 10 == 0:
             write_outputs()
 
+    if blurs:
+        rec.anneal_blur( blurs = blurs, max_iter = p.max_iter, callback = snap,
+                         model_kwargs = dict( background = p.background, kernel_dtype = p.kernel ) )
     if multiscale:
         # par étages : chaque étage s'arrête quand scipy ne progresse plus ( `ftol` ) ou à
-        # `max_iter` -- la « quasi-convergence » qui suffit avant de raffiner
+        # `max_iter` -- la « quasi-convergence » qui suffit avant de raffiner. Après le flou, le
+        # nuage de départ est DÉJÀ convergé sur la donnée nette : on raffine tout de suite.
+        if blurs and blurs[ -1 ] == 0 and rec.nb_points < p.nb_points:
+            rec.split( multiscale[ 1 ] ).subsample( min( rec.nb_points, p.nb_points ) )
         rec.multiscale( p.nb_points, nb_points_init = multiscale[ 0 ], factor = multiscale[ 1 ],
                         model = model, max_iter = p.max_iter, callback = snap )
-    else:
+    elif not blurs:
         # `min_iter = max_iter` : tous les pas demandés, pas un arrêt de scipy sur un `ftol` que le
         # bruit des ajustements internes ( `mass_tol` ) déclenche trop tôt -- c'est une expérience
         rec.run( model, max_iter = p.max_iter, min_iter = p.max_iter, callback = snap, label = "diracs 3D" )
@@ -214,6 +238,31 @@ if p := experiment( "rec 3D random spheres", nb_spheres = Param( 8, help = "nomb
     # un fantôme moins symétrique : des boules de rayons variés, tirées au hasard
     centers, radii = _random_spheres( p.nb_spheres, p.seed + 100 )
     _run_3d( p, centers, radii, "rec_3d_random_spheres" )
+
+if p := experiment( "rec 3D blur",
+                    blurs          = Param( "1,0.25,0.06,0.015,0", help = "les flous, en fraction de la largeur du détecteur" ),
+                    nb_spheres     = Param( 8, help = "nombre de boules" ),
+                    **{ **_PARAMS, "init": Param( "cube", help = "point de départ : `cube` ( tout le cube ) ou `hull`" ),
+                        "max_iter": Param( 20, help = "pas de L-BFGS au plus PAR ÉTAGE" ) } ):
+    # les projections FLOUTÉES d'abord ( `Reconstruction.anneal_blur` ), depuis un nuage tiré dans
+    # tout le cube -- le cas que la donnée nette ne sait pas résoudre : ses zéros. À l'échelle du
+    # domaine la cible est une bosse partout et le transport se résout en quelques pas de Newton
+    # quel que soit le nuage ; chaque étage suivant resserre le flou depuis un nuage déjà en place.
+    centers, radii = _random_spheres( p.nb_spheres, p.seed + 100 )
+    _run_3d( p, centers, radii, "rec_3d_blur", blurs = [ float( b ) for b in str( p.blurs ).split( "," ) ] )
+
+if p := experiment( "rec 3D blur multiscale",
+                    blurs          = Param( "1,0.25,0.06,0.015,0", help = "les flous, en fraction de la largeur du détecteur" ),
+                    nb_points_init = Param( 500, help = "diracs des étages floutés et du premier raffinement" ),
+                    factor         = Param( 4, help = "enfants par dirac à chaque raffinement" ),
+                    nb_spheres     = Param( 8, help = "nombre de boules" ),
+                    **{ **_PARAMS, "init": Param( "cube", help = "point de départ : `cube` ou `hull`" ),
+                        "nb_points": Param( 32000, help = "nombre de diracs FINAL" ),
+                        "max_iter": Param( 20, help = "pas de L-BFGS au plus PAR ÉTAGE" ) } ):
+    # les deux : le flou resserré sur un petit nuage, puis le raffinement par étages sur la donnée nette
+    centers, radii = _random_spheres( p.nb_spheres, p.seed + 100 )
+    _run_3d( p, centers, radii, "rec_3d_blur_multiscale", multiscale = ( p.nb_points_init, p.factor ),
+             blurs = [ float( b ) for b in str( p.blurs ).split( "," ) ] )
 
 if p := experiment( "rec 3D multiscale",
                     nb_points_init = Param( 500, help = "diracs du premier étage" ),

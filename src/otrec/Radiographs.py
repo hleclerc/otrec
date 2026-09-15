@@ -191,6 +191,28 @@ class Radiographs( Aggregate ):
         self.values = self.values + density * contribution
         return self
 
+    def blurred( self, sigma: float ) -> "Radiographs":
+        """Les mêmes radiographies FLOUTÉES d'une gaussienne d'écart-type `sigma` ( en unités
+        monde ), chacune séparément -- un nouveau `Radiographs` de même géométrie.
+
+        Ce que le flou achète : plus de ZÉROS. Une radiographie de boules est nulle hors de
+        leurs ombres, et un dirac qui y projette n'a ni cellule ni gradient ( voir `OtPlan` ) ;
+        floutée à l'échelle du domaine ( `sigma ~ extent` ), elle est une bosse positive partout,
+        et le transport est doux. Une reconstruction commence là et resserre le flou
+        ( `Reconstruction.anneal_blur` ). Le bord du détecteur est prolongé par zéro : ce qui
+        déborde est perdu, ce qui ne change rien à une cible normalisée par angle.
+        """
+        from scipy.ndimage import gaussian_filter
+        out = Radiographs( nb_angles = len( self.angles ), nb_u = self.nb_u_host, nb_v = self.nb_v_host,
+                           extent_u = self.extent_u, extent_v = self.extent_v,
+                           detector_center = self.detector_center, quadrature = self.quadrature )
+        vals = np.asarray( self.values )
+        if sigma > 0:
+            vals = np.stack( [ gaussian_filter( v, sigma = ( sigma / self.du, sigma / self.dv ), mode = "constant" )
+                               for v in vals ] )
+        out.values = vals
+        return out
+
     # -- consommation ------------------------------------------------------
 
     def _image_kwargs( self ):
