@@ -220,11 +220,11 @@ def _run_3d( p, centers, radii, stem, multiscale = None, blurs = None ):
 
 _PARAMS = dict(
     nb_points    = Param( 10000, help = "nombre de diracs" ),
-    nb_angles    = Param( 6, help = "nombre d'angles de projection" ),
+    nb_angles    = Param( 100, help = "nombre d'angles de projection" ),
     nb_pixels    = Param( 128, help = "pixels par côté du détecteur" ),
     max_iter     = Param( 30, help = "nombre de pas de L-BFGS" ),
     record_every = Param( 1, help = "une image toutes les k pas" ),
-    background   = Param( 1e-3, help = "fond ajouté aux radiographies, en fraction de la moyenne" ),
+    background   = Param( 1e-6, help = "fond ajouté aux radiographies, en fraction de la moyenne" ),
     init         = Param( "hull", help = "point de départ : `hull` ( l'enveloppe visuelle ) ou `cube`" ),
     kernel       = Param( "FP32", help = "le flottant du noyau ( FP32 ou FP64 )" ),
     seed         = Param( 1, help = "graine du tirage" ),
