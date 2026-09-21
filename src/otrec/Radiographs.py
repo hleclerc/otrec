@@ -125,7 +125,7 @@ class Radiographs( Aggregate ):
         Le point de départ qu'une reconstruction veut : un dirac dont une projection tombe dans le
         vide n'a, à cet angle, qu'une cellule de mesure quasi nulle, et le transport qui doit
         l'amener jusqu'à l'ombre est aussi mal conditionné qu'il est loin ( voir `OtPlan`,
-        `objective = "newton"` ). L'enveloppe visuelle contient l'objet, et c'est déjà lui à peu
+        le Newton de `OtPlan` ). L'enveloppe visuelle contient l'objet, et c'est déjà lui à peu
         de choses près quand les angles sont assez nombreux.
         """
         rng = np.random.default_rng( seed )

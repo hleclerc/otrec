@@ -179,7 +179,7 @@ class ProjectedDiracModel( Model ):
       de la cellule de Laguerre, voir `OtPlan.cost_and_position_grad` ), puis remonté en 3D par la
       transposée de la projection ( `Radiographs.unproject_grad` ). Le modèle n'a donc qu'un
       `value_and_grad` fusionné ( `FusedLBFGS` ) -- `cost` rend un flottant, pas un `Tensor` ;
-    - chaque angle est résolu par le Newton amorti de `OtPlan` ( `objective = "newton"` ), et les
+    - chaque angle est résolu par le Newton amorti de `OtPlan` ( tout en C++ ), et les
       poids ajustés sont GARDÉS d'une évaluation à l'autre ( `weights0` du prochain `OtPlan` ) :
       des points qui bougent peu demandent des poids qui bougent peu, quelques pas suffisent. C'est
       un cache, pas un état -- le résultat n'en dépend pas ;
@@ -197,20 +197,18 @@ class ProjectedDiracModel( Model ):
     fused_only = True
 
     def __init__( self, radiographs: Radiographs, background: float = 1e-3, max_iter: int = 100,
-                  mass_tol: float = 1e-4, kernel_dtype = None, damping: str = "kmt" ) -> None:
-        """`background`, `max_iter`, `mass_tol`, `damping` : voir la docstring de la classe et `OtPlan`.
-        `damping = "kmt"` reste le défaut : le Newton NON amorti ( `"none"` ) a été mesuré 5 à 50
-        fois plus lent, floutage ou pas ( son retour arrière repart de 1 à chaque pas, là où KMT
-        repart du dernier pas accepté ) -- voir `notes/2026-09-14-reconstruction-3d.md`.
+                  mass_tol: float = 1e-4, kernel_dtype = None ) -> None:
+        """`background`, `max_iter`, `mass_tol` : voir la docstring de la classe et `OtPlan`. Le Newton
+        est celui de KMT, amorti ( le Newton NON amorti a été mesuré 5 à 50 fois plus lent, floutage
+        ou pas -- voir `notes/2026-09-14-reconstruction-3d.md` -- et n'existe plus ).
         `mass_tol` est RELATIF à la masse d'un dirac ( `1 / n` ) -- et borné par ce que le noyau
-        sait : en FP32 ( le défaut ), l'aire d'une cellule n'est connue qu'à ~1e-5 près en relatif,
-        en dessous le Newton ne trouve plus de pas qui baisse le résidu."""
+        sait : en FP32, l'aire d'une cellule n'est connue qu'à ~1e-5 près en relatif, en dessous le
+        Newton ne trouve plus de pas qui baisse le résidu ( `OtPlan` coupe en FP64 par défaut )."""
         super().__init__( radiographs )
         self.radiographs = radiographs
         self.background = float( background )
         self.max_iter = int( max_iter )
         self.mass_tol = float( mass_tol )
-        self.damping = damping
         self.kernel_dtype = kernel_dtype
         nb_angles = int( radiographs.nb_angles.value )
         self._images = [ radiographs.image( k, background = self.background ) for k in range( nb_angles ) ]
@@ -221,9 +219,7 @@ class ProjectedDiracModel( Model ):
         zéro si ceux-ci vident déjà une cellule ( des points qui ont trop bougé )"""
         # le NEWTON sur la fonctionnelle duale : un nombre de pas indépendant du nombre de diracs,
         # et, d'une évaluation à l'autre ( `weights0` ), quelques pas seulement
-        kw = dict( objective = "newton", damping = self.damping, max_iter = self.max_iter, mass_tol = self.mass_tol,
-                   kernel_dtype = self.kernel_dtype, max_backtracks = 30 )
-        kw[ "mass_tol" ] = self.mass_tol / len( uv )
+        kw = dict( max_iter = self.max_iter, mass_tol = self.mass_tol / len( uv ), kernel_dtype = self.kernel_dtype )
         # un nuage qui a changé de TAILLE ( un étage de `Reconstruction.multiscale` ) repart de zéro
         w0 = self._weights[ k ]
         if w0 is not None and len( w0 ) != len( uv ):

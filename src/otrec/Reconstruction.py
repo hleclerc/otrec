@@ -371,7 +371,7 @@ class Reconstruction:
         range en douceur ; chaque étage suivant part d'un nuage déjà à sa place pour une cible à
         peine plus nette. Mesuré ( 3000 diracs, `OtPlan` Newton ) : floutée à l'échelle du domaine,
         la cible se résout en 6 à 11 pas depuis N'IMPORTE quel nuage ( l'enveloppe visuelle, le
-        cube, ou même hors du détecteur -- la similitude de `OtPlan._similarity_start` s'en
+        cube, ou même hors du détecteur -- la similitude de `OtPlan` ( `otplan/Solve.h` ) s'en
         charge ), là où la donnée nette demande 34 pas depuis l'enveloppe et ne converge pas du
         tout depuis le cube.
         """
