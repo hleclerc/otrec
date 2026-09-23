@@ -24,6 +24,7 @@ En 3D ( des `Radiographs`, une image 2D par angle ), `ProjectedDiracModel` joue 
 `DiracModel` avec un transport semi-discret 2D par angle ( `OtPlan` ) -- et ne propose que
 l'évaluation FUSIONNÉE coût + gradient ( voir sa docstring ).
 """
+import warnings
 from abc import ABC, abstractmethod
 
 from loom import Tensor
@@ -182,13 +183,33 @@ class ProjectedDiracModel( Model ):
     - chaque angle est résolu par le Newton amorti de `OtPlan` ( tout en C++ ), et les
       poids ajustés sont GARDÉS d'une évaluation à l'autre ( `weights0` du prochain `OtPlan` ) :
       des points qui bougent peu demandent des poids qui bougent peu, quelques pas suffisent. C'est
-      un cache, pas un état -- le résultat n'en dépend pas ;
-    - le point de DÉPART compte : des diracs tirés dans tout le cube projettent dans le vide, où le
-      transport est aussi mal conditionné qu'il est loin ( `Reconstruction.hull_points` tire dans
-      l'enveloppe visuelle, ce qui l'évite ) ;
-    - la radiographie reçoit un FOND ( `background`, en fraction de sa valeur moyenne ) : une boule
-      projetée est nulle hors de son ombre, et un dirac qui y tomberait aurait une cellule de mesure
-      nulle, donc aucun gradient ( voir `OtPlan` ). Le fond est ce qui le tire vers l'objet.
+      un cache, pas un état -- le résultat n'en dépend pas, et il n'a plus à être écarté quand il
+      vide une cellule : le C++ choisit lui-même le meilleur des trois départs qu'il connaît ( les
+      poids donnés, le Voronoï, la similitude qui ramène le nuage dans le détecteur ) et dit lequel
+      dans `stats[ "depart" ]` ;
+    - une projection est 2D, donc le pas de Newton y est celui par les LIMITES ( `step = "auto"`
+      -> `"limits"` ) : le coefficient de relaxation maximal des cellules qui s'écrasent le long de
+      la direction, calculé EXACTEMENT au lieu d'être cherché par essais successifs -- d'où des
+      reculs devenus rares ( 1.8 par ajustement sur le cas mesuré ci-dessous, contre 515 quand le
+      problème est mal posé ) ;
+    - la radiographie reçoit un FOND ( `background`, en fraction de sa valeur moyenne ), et il
+      reste INDISPENSABLE : une boule projetée est nulle hors de son ombre, et une cellule qui ne
+      voit que des zéros n'a AUCUN poids qui lui donne sa masse -- le problème n'a pas de solution,
+      pas seulement un mauvais départ. La CONTINUATION EN LARGEUR d'`OtPlan`
+      ( `continuation = "auto"` : la densité convolée large d'abord, resserrée étape par étape,
+      chacune repartant des poids de la précédente ) adoucit le CHEMIN, pas la cible : sa dernière
+      étape est la densité elle-même, zéros compris. Mesuré ( 200 diracs, 6 angles, 64 x 64,
+      départ dans le cube, `notes/2026-09-23-otrec-3d.md` ) : sans fond, 36 ajustements sur 48 ne convergent
+      pas, 515 reculs par appel, et la perte MONTE ( 2.6 -> 8.0 ) ; avec un fond de 1e-6, tous
+      convergent, 22 diagrammes par appel, 98 % des diracs finissent dans les boules ;
+    - ce que la continuation change, en revanche, c'est qu'un fond FAIBLE devient utilisable.
+      Même cas, `continuation = "never"` contre `"auto"`, à fond 1e-6 : 25 ajustements sur 78 ne
+      convergent pas, 950 diagrammes par appel, 46 % des diracs dans les boules -- contre aucun
+      raté, 22 diagrammes et 98 %. À fond 1e-3 elle ne coûte rien et économise un tiers des
+      diagrammes en supprimant les reculs ;
+    - le point de DÉPART compte toujours, pour ce qu'il coûte : des diracs tirés dans tout le cube
+      font refaire des étapes de continuation à chaque angle et à chaque évaluation, là où
+      `Reconstruction.hull_points` ( l'enveloppe visuelle ) part d'emblée près de l'objet.
     """
 
     name = "diracs 3D"
@@ -197,36 +218,90 @@ class ProjectedDiracModel( Model ):
     fused_only = True
 
     def __init__( self, radiographs: Radiographs, background: float = 1e-3, max_iter: int = 100,
-                  mass_tol: float = 1e-4, kernel_dtype = None ) -> None:
-        """`background`, `max_iter`, `mass_tol` : voir la docstring de la classe et `OtPlan`. Le Newton
-        est celui de KMT, amorti ( le Newton NON amorti a été mesuré 5 à 50 fois plus lent, floutage
-        ou pas -- voir `notes/2026-09-14-reconstruction-3d.md` -- et n'existe plus ).
+                  mass_tol: float = 1e-4, kernel_dtype = None, continuation: str = "auto",
+                  strict: bool = False ) -> None:
+        """`background`, `max_iter`, `mass_tol`, `continuation` : voir la docstring de la classe et
+        `OtPlan`. Le Newton est celui de KMT, amorti ( le Newton NON amorti a été mesuré 5 à 50 fois
+        plus lent, floutage ou pas -- voir `notes/2026-09-14-reconstruction-3d.md` -- et n'existe
+        plus ), le pas venant des LIMITES puisqu'une projection est 2D.
+
         `mass_tol` est RELATIF à la masse d'un dirac ( `1 / n` ) -- et borné par ce que le noyau
         sait : en FP32, l'aire d'une cellule n'est connue qu'à ~1e-5 près en relatif, en dessous le
-        Newton ne trouve plus de pas qui baisse le résidu ( `OtPlan` coupe en FP64 par défaut )."""
+        Newton ne trouve plus de pas qui baisse le résidu. D'où `kernel_dtype = None` par défaut,
+        qui laisse `OtPlan` couper en FP64 -- FP32 est à réserver aux essais.
+
+        `strict` : lever dès qu'un angle ne converge pas, au lieu de le compter dans
+        `solver_stats` et de rendre quand même le coût ( un ajustement inachevé donne un gradient
+        faux par le théorème de l'enveloppe, qui suppose les poids optimaux )."""
         super().__init__( radiographs )
         self.radiographs = radiographs
         self.background = float( background )
         self.max_iter = int( max_iter )
         self.mass_tol = float( mass_tol )
         self.kernel_dtype = kernel_dtype
+        self.continuation = continuation
+        self.strict = bool( strict )
         nb_angles = int( radiographs.nb_angles.value )
         self._images = [ radiographs.image( k, background = self.background ) for k in range( nb_angles ) ]
         self._weights = [ None ] * nb_angles
+        # une cible qui garde des pixels NULS ne se transporte pas ( voir la docstring de la classe :
+        # mesuré, les ajustements n'y convergent pas et la perte monte ). On le dit une fois, au lieu
+        # de laisser une descente de plusieurs heures rendre un nuage faux.
+        if self.background <= 0 and float( np.asarray( radiographs.values ).min() ) <= 0:
+            warnings.warn( "ProjectedDiracModel : les radiographies ont des pixels NULS et aucun fond "
+                           "n'est ajouté ( background = 0 ) -- les ajustements par angle ne convergeront "
+                           "pas ( la continuation adoucit le chemin, pas la cible ). Donner "
+                           "`background > 0` ( 1e-6 suffit ).", stacklevel = 2 )
+        #: ce que les ajustements ont coûté depuis le début, tous angles confondus ( voir
+        #: `solver_line` ) -- ce qu'on regarde pour savoir si le nuage est encore loin
+        self.solver_stats = dict( nb_calls = 0, nb_iter = 0, nb_diag = 0, nb_recul = 0, nb_etapes = 0,
+                                  nb_voronoi = 0, nb_similitude = 0, nb_not_converged = 0 )
 
     def _plan( self, k, uv ):
-        """le transport de l'angle `k`, ajusté -- en repartant des poids de la dernière fois, ou de
-        zéro si ceux-ci vident déjà une cellule ( des points qui ont trop bougé )"""
+        """le transport de l'angle `k`, ajusté -- en repartant des poids de la dernière fois"""
         # le NEWTON sur la fonctionnelle duale : un nombre de pas indépendant du nombre de diracs,
-        # et, d'une évaluation à l'autre ( `weights0` ), quelques pas seulement
-        kw = dict( max_iter = self.max_iter, mass_tol = self.mass_tol / len( uv ), kernel_dtype = self.kernel_dtype )
+        # et, d'une évaluation à l'autre ( `weights0` ), quelques pas seulement. Des poids qui
+        # vident une cellule ne sont plus écartés ici : le C++ compare lui-même les trois départs
+        # qu'il connaît et garde le meilleur ( `stats[ "depart" ]` ).
+        kw = dict( max_iter = self.max_iter, mass_tol = self.mass_tol / len( uv ),
+                   kernel_dtype = self.kernel_dtype, continuation = self.continuation )
         # un nuage qui a changé de TAILLE ( un étage de `Reconstruction.multiscale` ) repart de zéro
         w0 = self._weights[ k ]
         if w0 is not None and len( w0 ) != len( uv ):
             w0 = None
         plan = OtPlan( SumOfDiracs( uv ), self._images[ k ], weights0 = w0, **kw )
         self._weights[ k ] = plan.weights
+        self._account( k, plan )
         return plan
+
+    def _account( self, k, plan ):
+        """ce que l'ajustement de l'angle `k` a coûté, cumulé dans `solver_stats`"""
+        st = plan.stats
+        s = self.solver_stats
+        s[ "nb_calls" ] += 1
+        for name in ( "nb_iter", "nb_diag", "nb_recul", "nb_etapes" ):
+            s[ name ] += st[ name ]
+        if st[ "depart" ] == "voronoi":
+            s[ "nb_voronoi" ] += 1
+        elif st[ "depart" ] == "similitude":
+            s[ "nb_similitude" ] += 1
+        if not plan.converged:
+            s[ "nb_not_converged" ] += 1
+            if self.strict:
+                raise RuntimeError( f"ProjectedDiracModel : l'angle { k } n'a pas convergé "
+                                    f"( { st[ 'fin' ] }, reste { st[ 'reste' ]:.3e} ) -- le gradient de "
+                                    "l'enveloppe suppose les poids optimaux" )
+
+    def solver_line( self ) -> str:
+        """Une ligne de ce que les ajustements ont coûté, MOYENNÉE par angle résolu -- de quoi voir
+        d'un coup d'oeil si le nuage est encore loin ( des étapes de continuation, des départs au
+        Voronoï ) ou déjà chaud ( deux ou trois pas de Newton, aucune étape )."""
+        s = self.solver_stats
+        nb = max( 1, s[ "nb_calls" ] )
+        return ( f"{ s[ 'nb_calls' ] } ajustements : { s[ 'nb_iter' ] / nb:.1f} pas, "
+                 f"{ s[ 'nb_diag' ] / nb:.1f} diagrammes, { s[ 'nb_etapes' ] / nb:.2f} étapes de continuation, "
+                 f"{ s[ 'nb_recul' ] / nb:.2f} reculs, départs { s[ 'nb_voronoi' ] } Voronoï / "
+                 f"{ s[ 'nb_similitude' ] } similitude, { s[ 'nb_not_converged' ] } non convergés" )
 
     def value_and_grad( self, points ):
         """`( cost, grad )`, `grad` de shape `[ n, 3 ]` -- voir la docstring de la classe."""

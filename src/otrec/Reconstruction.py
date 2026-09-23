@@ -91,6 +91,10 @@ class Reconstruction:
         self.history: list[ dict ] = []
         #: rayon monde des points, hérité du dernier modèle joué (voir `export_html`)
         self.radii = None
+        #: le dernier modèle joué (`run`) -- ce qu'une expérience interroge après coup quand le
+        #: modèle a été construit ici et non par elle (`anneal_blur`, `multiscale` sans `model`) :
+        #: `ProjectedDiracModel.solver_line()`, par exemple.
+        self.model: Model | None = None
 
         if points is not None:
             self.set_points( points )
@@ -262,6 +266,8 @@ class Reconstruction:
         # qui la consomme
         fused_only = getattr( model, "fused_only", False )
         optimizer = optimizer if optimizer is not None else self.default_optimizer( max_iter, ftol, min_iter, disp_tol, fused = fused_only )
+        # posé AVANT la descente : un `callback` regarde le modèle en cours de route
+        self.model = model
 
         p = self.points.raw
         loss_before = float( model.cost( model.wrap( p ) ) )
@@ -323,7 +329,11 @@ class Reconstruction:
         `benchmarks/execution_speed/benchmark_fused.py`) : force l'optimiseur par défaut à
         `FusedLBFGS` (voir `default_optimizer`), sauf si `optimizer` est fourni explicitement.
         """
-        model_kwargs = { k: kwargs.pop( k ) for k in ( "background", ) if k in kwargs }
+        # ce qui va au MODÈLE et non à la descente ( `run` ) -- les réglages du transport par angle
+        # de `ProjectedDiracModel` ( `background`, `continuation`, ... ). `max_iter` n'en est pas :
+        # c'est celui de L-BFGS, le cap du Newton s'appelle `mass_tol`/`max_iter` DANS le modèle.
+        model_kwargs = { k: kwargs.pop( k ) for k in ( "background", "continuation", "mass_tol",
+                                                       "kernel_dtype", "strict" ) if k in kwargs }
         model = self.dirac_model( with_barycenters, **model_kwargs )
         # un modèle qui n'a QUE l'évaluation fusionnée ( `ProjectedDiracModel` ) impose son optimiseur
         if getattr( model, "fused_only", False ):
@@ -365,15 +375,21 @@ class Reconstruction:
         diracs de la donnée floutée ( `Radiographs.blurred` / `Sinogram.blurred` ) est descendu depuis
         le nuage courant. `kwargs` -> `run` ( `max_iter`, ... ), `model_kwargs` -> `dirac_model`.
 
-        Pourquoi : les projections ont des ZÉROS, et tout ce qui y projette est sans cellule ni
-        gradient -- le transport 2D par angle est alors aussi mal conditionné qu'il est loin. À
-        l'échelle du domaine, la donnée floutée est une bosse positive partout et le nuage s'y
-        range en douceur ; chaque étage suivant part d'un nuage déjà à sa place pour une cible à
-        peine plus nette. Mesuré ( 3000 diracs, `OtPlan` Newton ) : floutée à l'échelle du domaine,
-        la cible se résout en 6 à 11 pas depuis N'IMPORTE quel nuage ( l'enveloppe visuelle, le
-        cube, ou même hors du détecteur -- la similitude de `OtPlan` ( `otplan/Solve.h` ) s'en
-        charge ), là où la donnée nette demande 34 pas depuis l'enveloppe et ne converge pas du
-        tout depuis le cube.
+        Le flou porte ici sur le problème EXTÉRIEUR -- les POSITIONS : une cible floutée a des
+        gradients qui portent loin, un nuage mal placé s'y range en douceur, et chaque étage suivant
+        part d'un nuage déjà à sa place pour une cible à peine plus nette.
+
+        À ne pas confondre avec la CONTINUATION EN LARGEUR d'`OtPlan` ( `continuation = "auto"` ),
+        qui floute la même densité mais à l'INTÉRIEUR d'un ajustement, pour trouver les POIDS d'un
+        nuage donné : ses étapes finissent sur la donnée TELLE QUELLE, donc elle ne dispense ni du
+        `background` ( une cellule qui ne voit que des zéros n'a pas de poids qui lui donne sa
+        masse ) ni de ce flou-ci, qui change la CIBLE et donc le paysage des positions. Les deux se
+        composent : `model_kwargs` transmet `background`/`continuation` au modèle de chaque étage.
+
+        Ce que le flou achète ENCORE est à remesurer cas par cas : sur les boules de
+        `test_reconstruction_3d`, depuis le cube, 200 diracs, la donnée nette ( fond 1e-6 ) finit à
+        98 % des diracs dans les boules et une perte de 1.0e-2, contre 99 % et 9.9e-3 après quatre
+        étages de flou -- voir `notes/2026-09-23-otrec-3d.md`.
         """
         blurred = getattr( self.sinogram, "blurred", None )
         if blurred is None:

@@ -68,9 +68,12 @@ if test( "multiscale_refines_up_to_the_requested_count_in_3d" ):
 
 
 if test( "blur_annealing_reconstructs_from_the_cube" ):
-    # depuis un nuage tiré dans tout le CUBE ( le cas que la donnée nette ne sait pas résoudre :
-    # ses zéros ), les projections floutées d'abord ( `Reconstruction.anneal_blur` ) puis
-    # resserrées amènent les diracs dans les boules
+    # depuis un nuage tiré dans tout le CUBE, les projections floutées d'abord
+    # ( `Reconstruction.anneal_blur` ) puis resserrées amènent les diracs dans les boules. Le flou
+    # ne sert plus à rendre le TRANSPORT possible -- la continuation en largeur d'`OtPlan` s'en
+    # charge, pourvu que la cible soit > 0 partout -- mais à adoucir le paysage que L-BFGS descend.
+    # C'est l'enchaînement des étages que ce test vérifie, pas leur nécessité ( mesurée faible :
+    # `notes/2026-09-23-otrec-3d.md` )
     radio = _sphere_radiographs()
     rec = Reconstruction( radio ).random_points( 60, seed = 1 )
     assert _in_spheres( rec.positions ) < 0.5
@@ -113,9 +116,27 @@ if test( "reconstruct_converges_in_3d" ):
 # MÊME scène pour ParaView -- un `.pvd` qui rassemble un `.vtu` par pas, à ouvrir tel quel, le
 # rayon de chaque point en donnée de cellule ( `Glyph`, sphères, `Scale Array = radius` ). Plus la
 # courbe de convergence. Sur cette machine ( 16 coeurs chargés ), `OMP_NUM_THREADS=4` divise par
-# dix le coût d'un petit kernel -- voir `notes/2026-09-14-reconstruction-3d.md`. Ce que ça coûte :
-# ~150 à 300 s par pas à 20 000 diracs et 6 angles ( les ajustements par angle repartent souvent
-# du Voronoï, ~50 pas de Newton chacun ), les sorties étant réécrites tous les dix pas.
+# dix le coût d'un petit kernel -- voir `notes/2026-09-14-reconstruction-3d.md`.
+#
+# CE QUE LE SOLVEUR FAIT MAINTENANT ( `OtPlan` entièrement en C++, voir
+# `notes/2026-09-22-otplan-cpp.md` ), et que ces expériences affichent à chaque image
+# ( `ProjectedDiracModel.solver_line()` ) :
+#   - le pas de Newton d'une projection ( 2D ) vient des LIMITES, donc sans reculs ;
+#   - un départ qui vide des cellules n'est plus un échec : le C++ choisit entre les poids chauds,
+#     le Voronoï et la similitude, et la CONTINUATION EN LARGEUR ( la densité convolée, resserrée
+#     étape par étape ) reprend les cas où le Newton direct stagnait ;
+#   - ce qu'elle ne remplace PAS : le FOND ( `--background` ). Elle adoucit le chemin, pas la
+#     cible -- sa dernière étape est la donnée elle-même, zéros compris, et une cellule qui ne voit
+#     que des zéros n'a aucun poids qui lui donne sa masse. Mesuré depuis le cube ( 200 diracs,
+#     6 angles, 64 x 64, `notes/2026-09-23-otrec-3d.md` ) : sans fond, 36 ajustements sur 48 ne
+#     convergent pas et la perte MONTE ; avec 1e-6, tous convergent en 22 diagrammes et 98 % des
+#     diracs finissent dans les boules ;
+#   - les poids chauds d'une évaluation à l'autre gardent le nombre de pas à quelques unités dès
+#     que le nuage ne bouge plus beaucoup -- ce que la ligne du solveur montre en clair ( des
+#     étapes de continuation et des départs au Voronoï = le nuage est encore loin ).
+# Le prix en reste là : un ajustement par angle et par évaluation, une évaluation par pas de
+# L-BFGS -- compter des minutes par pas à 20 000 diracs et 6 angles, les sorties étant réécrites
+# tous les dix pas.
 
 def _random_spheres( nb_spheres, seed, extent = 2.2 ):
     """`nb_spheres` boules de rayons variés, DISJOINTES, dans le cube `[ -extent/2, extent/2 ]^3`"""
@@ -156,7 +177,8 @@ def _run_3d( p, centers, radii, stem, multiscale = None, blurs = None ):
 
     viz = Visualizer( title = f"reconstruction 3D -- { p.nb_points } diracs, { p.nb_angles } angles" )
     fractions, times, counts, t0 = [], [], [], time.perf_counter()
-    model = rec.dirac_model( background = p.background, kernel_dtype = p.kernel )
+    model_kwargs = dict( background = p.background, kernel_dtype = p.kernel, continuation = p.continuation )
+    model = rec.dirac_model( **model_kwargs )
 
     def write_outputs():
         viz.write_html( p.out_dir / f"{ stem }.html" )
@@ -181,13 +203,18 @@ def _run_3d( p, centers, radii, stem, multiscale = None, blurs = None ):
         times.append( time.perf_counter() - t0 )
         print( f"  image { len( fractions ) - 1 } ( pas { step + 1 }, { len( pts ) } diracs ), { times[ -1 ]:.0f} s, "
                f"{ fractions[ -1 ] * 100:.1f} % dans les boules", flush = True )
+        # ce que les ajustements par angle ont coûté depuis le début ( le modèle en cours, que
+        # `anneal_blur` / `multiscale` construisent eux-mêmes ) -- voir l'en-tête de ce fichier
+        line = getattr( rec.model, "solver_line", None )
+        if line is not None:
+            print( f"    { line() }", flush = True )
         # une descente longue s'écrit EN COURS DE ROUTE : ce qui est fait est déjà regardable
         if len( fractions ) % 10 == 0:
             write_outputs()
 
     if blurs:
         rec.anneal_blur( blurs = blurs, max_iter = p.max_iter, callback = snap,
-                         model_kwargs = dict( background = p.background, kernel_dtype = p.kernel ) )
+                         model_kwargs = model_kwargs )
     if multiscale:
         # par étages : chaque étage s'arrête quand scipy ne progresse plus ( `ftol` ) ou à
         # `max_iter` -- la « quasi-convergence » qui suffit avant de raffiner. Après le flou, le
@@ -224,9 +251,13 @@ _PARAMS = dict(
     nb_pixels    = Param( 128, help = "pixels par côté du détecteur" ),
     max_iter     = Param( 30, help = "nombre de pas de L-BFGS" ),
     record_every = Param( 1, help = "une image toutes les k pas" ),
-    background   = Param( 1e-6, help = "fond ajouté aux radiographies, en fraction de la moyenne" ),
+    background   = Param( 1e-6, help = "fond ajouté aux radiographies, en fraction de la moyenne -- "
+                                       "INDISPENSABLE ( une cellule qui ne voit que des zéros n'a pas "
+                                       "de poids qui lui donne sa masse ) ; `0` pour le constater" ),
+    continuation = Param( "auto", help = "la continuation en largeur d'`OtPlan` : auto, always, never" ),
     init         = Param( "hull", help = "point de départ : `hull` ( l'enveloppe visuelle ) ou `cube`" ),
-    kernel       = Param( "FP32", help = "le flottant du noyau ( FP32 ou FP64 )" ),
+    kernel       = Param( "FP64", help = "le flottant du noyau ( FP64 : ce que l'amortissement demande ; "
+                                         "FP32 pour voir ce qu'il en coûte )" ),
     seed         = Param( 1, help = "graine du tirage" ),
 )
 
@@ -240,14 +271,19 @@ if p := experiment( "rec 3D random spheres", nb_spheres = Param( 8, help = "nomb
     _run_3d( p, centers, radii, "rec_3d_random_spheres" )
 
 if p := experiment( "rec 3D blur",
-                    blurs          = Param( "1,0.25,0.06,0.015,0", help = "les flous, en fraction de la largeur du détecteur" ),
+                    blurs          = Param( "1,0.25,0.06,0.015,0", help = "les flous, en fraction de la largeur du détecteur "
+                                                                          "( `0` seul : la donnée nette, pour comparer )" ),
                     nb_spheres     = Param( 8, help = "nombre de boules" ),
                     **{ **_PARAMS, "init": Param( "cube", help = "point de départ : `cube` ( tout le cube ) ou `hull`" ),
                         "max_iter": Param( 20, help = "pas de L-BFGS au plus PAR ÉTAGE" ) } ):
     # les projections FLOUTÉES d'abord ( `Reconstruction.anneal_blur` ), depuis un nuage tiré dans
-    # tout le cube -- le cas que la donnée nette ne sait pas résoudre : ses zéros. À l'échelle du
-    # domaine la cible est une bosse partout et le transport se résout en quelques pas de Newton
-    # quel que soit le nuage ; chaque étage suivant resserre le flou depuis un nuage déjà en place.
+    # tout le cube. Ce qui a changé : le flou n'est plus ce qui rend le TRANSPORT possible -- la
+    # continuation en largeur d'`OtPlan` s'en charge, à condition d'un fond > 0. Il ne reste au flou
+    # que son autre rôle, adoucir le paysage que L-BFGS descend, et c'est peu : à 200 diracs depuis
+    # le cube, la donnée nette ( fond 1e-6 ) finit à 98 % des diracs dans les boules contre 99 %
+    # après quatre étages de flou, pour un temps comparable ( `notes/2026-09-23-otrec-3d.md` ).
+    # `--blurs=0` fait tourner la même expérience sans flou : c'est la comparaison à refaire sur un
+    # fantôme plus dur avant de se passer de ces étages.
     centers, radii = _random_spheres( p.nb_spheres, p.seed + 100 )
     _run_3d( p, centers, radii, "rec_3d_blur", blurs = [ float( b ) for b in str( p.blurs ).split( "," ) ] )
 
