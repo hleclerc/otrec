@@ -27,7 +27,7 @@ import numpy as np
 from otrec.Sinogram import Sinogram
 from otrec.models import DiskModel
 from otrec.HcReconstruction import HcReconstruction, GradientDescent, LBFGS, Quad2D
-from loom.testing import test
+from errand import test
 
 
 def _phantom_sinogram(nb_angles=24, nb_bins=150, extent=8.0):

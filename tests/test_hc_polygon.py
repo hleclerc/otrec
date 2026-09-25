@@ -16,7 +16,7 @@ import jax.numpy as jnp
 
 from otrec.HcReconstruction import HcReconstruction
 from otrec.HcReconstruction.cost.jax_polygon import _polygon_mass_angle
-from loom.testing import test
+from errand import test
 
 
 def _mc_polygon_mass(cx, cy, radius, theta, n_sides, nx, ny, pix_edges, rng, nsamp=2_000_000):

@@ -17,7 +17,7 @@ from otrec.models import DiskModel, sinogram_diracs
 from otrec.optimizers import LBFGS
 from otrec.viz.points_html import export_positions_html
 from loom import driver
-from loom.testing import test
+from errand import test
 
 
 EXTENT = 6.0

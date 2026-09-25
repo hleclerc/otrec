@@ -11,7 +11,7 @@ import numpy as np
 from otrec.Radiographs import Radiographs
 from otrec.Reconstruction import Reconstruction
 from sdot import set_kernel_dtype
-from loom.testing import Param, experiment, test
+from errand import Param, experiment, test
 
 set_kernel_dtype( "FP64" )
 

@@ -10,7 +10,7 @@ import numpy as np
 from otrec.halo import ( Halo, alternate, interior_values, mass_profile,
                                   scan_interior_mass, void_fraction )
 from otrec.Sinogram import Sinogram
-from loom.testing import test
+from errand import test
 
 
 def _annulus_sinogram( a, b, nb_angles = 5, nb_bins = 256, extent = 10.0 ):

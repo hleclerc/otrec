@@ -4,7 +4,7 @@ import numpy as np
 
 from otrec.Radiographs import Radiographs
 from sdot import OtPlan, SumOfDiracs
-from loom.testing import test
+from errand import test
 
 
 if test( "init_is_zero" ):

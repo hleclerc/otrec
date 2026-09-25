@@ -10,7 +10,7 @@ from otrec.Sinogram import Sinogram
 from otrec.models import DiracModel
 from otrec.dirac_sycl import diracs_cost_grad, subspace_hessian, MAX_DIRS
 from loom import driver
-from loom.testing import test
+from errand import test
 
 
 def _disk_sinogram( nb_angles = 8, nb_bins = 201, extent = 6.0, center = ( 0.3, -0.2 ), radius = 1.0 ):

@@ -55,7 +55,7 @@ import matplotlib.pyplot as plt
 
 from otrec.HcReconstruction import HcReconstruction
 from otrec.viz.line_search_compare import save_run, load_runs, plot_comparison
-from loom.cli import experiment, Param
+from errand import Param, experiment
 
 
 def _slugify(text: str) -> str:

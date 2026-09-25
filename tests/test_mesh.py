@@ -8,7 +8,7 @@ import numpy as np
 
 from otrec.mesh import GradedMesh, scan_exterior_scale
 from otrec.Sinogram import Sinogram
-from loom.testing import test
+from errand import test
 
 
 def _sino( nb_angles = 24, nb_bins = 512, extent = 10.0 ):

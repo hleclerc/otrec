@@ -2,7 +2,7 @@ import numpy as np
 
 from otrec.Sinogram import Sinogram
 from sdot import SumOfDiracs1d, OtPlan1d
-from loom.testing import test
+from errand import test
 
 
 # -- construction / état initial -----------------------------------------

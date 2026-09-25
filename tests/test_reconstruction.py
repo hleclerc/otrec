@@ -10,7 +10,7 @@ import numpy as np
 from otrec.Sinogram import Sinogram
 from otrec.Reconstruction import Reconstruction
 from otrec.optimizers import GradientDescent, LBFGS
-from loom.testing import test
+from errand import test
 
 
 def _disk_sinogram( nb_angles = 8, nb_bins = 201, extent = 6.0, center = ( 0.3, -0.2 ), radius = 1.0 ):

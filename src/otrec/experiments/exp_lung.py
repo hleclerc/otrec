@@ -4,7 +4,7 @@ Usage:
     ./run experiment lung
     ./run experiment lung --nb-diracs=5000 --max-iter=100
 """
-from loom.cli import experiment, Param
+from errand import Param, experiment
 
 if p := experiment(
     "lung BFGS",
