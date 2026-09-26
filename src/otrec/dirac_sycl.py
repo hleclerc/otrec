@@ -1,5 +1,5 @@
 """Référence SYCL (CPU pour l'instant) du coût + gradient du modèle DIRACS (`models.DiracModel`),
-en UN SEUL `driver.call` fwd-only -- sans `bwd_code`, donc sans passer par l'autodiff Jax : le
+en UN SEUL `driver.call` fwd-only -- sans `backward`, donc sans passer par l'autodiff Jax : le
 gradient est écrit directement par le kernel, formule fermée `(point - barycentre) * direction`,
 au lieu d'un `jax.grad` à travers `_pure_jax_cost1d.cost_1d_ot` (le chemin par défaut,
 `Image.try_update_otplan1d`) ou du couple fwd/bwd `OtPlan1d.cxx` (le chemin C++ général).
@@ -26,7 +26,7 @@ expose `diracs_cost_grad` avec le même contrat que `optimizers.FusedLBFGS` atte
 import numpy as np
 
 from loom import Tensor, Axis, CtShapeVar, driver, RealTensor, IntTensor
-from loom.compilation.FfiCode import FfiCodeParallel
+from loom.compilation.FfiCode import FfiCode
 from sdot.distributions.ProjectedSumOfDiracs import ProjectedSumOfDiracs
 
 from .Sinogram import Sinogram
@@ -61,14 +61,13 @@ def diracs_cost_grad( points, sinogram: Sinogram ):
     grad = RealTensor[ src.num_dirac, src.proj_dim ]()
 
     driver.call(
-        FfiCodeParallel(
-            name = "diracs_fused_cost_grad",
+        FfiCode(
             includes = [ "loom/support/atomic_add.h" ],
-            # zéro AVANT la boucle parallèle sur les angles : `grad` est PARTAGÉ (les points sont
-            # les mêmes à tous les angles) et accumulé par `atomic_add` -- un buffer FFI fraîchement
-            # alloué n'est pas garanti démarrer à zéro (voir `ProjectedSumOfDiracs::zero_position_grad`).
-            fwd_setup_code = "grad.fill_with( queue, 0 );",
-            fwd_code = """
+            # ( `grad` est PARTAGE -- les points sont les memes a tous les angles -- et accumule par
+            # `atomic_add`, donc il doit partir de zero. Plus besoin de le dire ici : toute sortie
+            # flottante partagee d'un appel batche est semee a zero d'office, voir
+            # `CallArg_Tensor.cpp_seed_member`. )
+            code = """
             {
                 const SI n = SI( src.points.shape( 0 ) );
                 auto order = sorted_idx( batch_index );
@@ -163,6 +162,7 @@ def diracs_cost_grad( points, sinogram: Sinogram ):
             }
             """,
         ),
+        name = "diracs_fused_cost_grad",
         output_attributes = [ "cost", "grad", "sorted_idx", "radix_tmp" ],
         scratch_attributes = [ "sorted_idx", "radix_tmp" ],
         has_dynamic_capacity = False,
@@ -196,9 +196,8 @@ def diracs_cost( points, sinogram: Sinogram ):
     cost = RealTensor[ sinogram.num_angle ]()
 
     driver.call(
-        FfiCodeParallel(
-            name = "diracs_fused_cost_only",
-            fwd_code = """
+        FfiCode(
+            code = """
             {
                 const SI n = SI( src.points.shape( 0 ) );
                 auto order = sorted_idx( batch_index );
@@ -259,6 +258,7 @@ def diracs_cost( points, sinogram: Sinogram ):
             }
             """,
         ),
+        name = "diracs_fused_cost_only",
         output_attributes = [ "cost", "sorted_idx", "radix_tmp" ],
         scratch_attributes = [ "sorted_idx", "radix_tmp" ],
         has_dynamic_capacity = False,
@@ -315,14 +315,11 @@ def subspace_hessian( points, directions, sinogram: Sinogram ):
     b = RealTensor[ dir_index_i ]()
 
     driver.call(
-        FfiCodeParallel(
-            name = "diracs_subspace_hessian",
+        FfiCode(
             includes = [ "loom/support/atomic_add.h" ],
-            # zéro AVANT la boucle parallèle sur les angles -- `H`/`b` sont PARTAGÉS (les diracs
-            # sont les mêmes à tous les angles) et accumulés par `atomic_add`, voir
-            # `diracs_cost_grad.fwd_setup_code` pour la même raison sur `grad`.
-            fwd_setup_code = "H.fill_with( queue, 0 ); b.fill_with( queue, 0 );",
-            fwd_code = f"""
+            # ( `H`/`b` sont PARTAGES -- les diracs sont les memes a tous les angles -- et
+            # accumules par `atomic_add`. Comme `grad` plus haut, ils sont semes a zero d'office. )
+            code = f"""
             {{
                 constexpr SI MAX_DIRS = { MAX_DIRS };
                 const SI n = SI( src.points.shape( 0 ) );
@@ -406,6 +403,7 @@ def subspace_hessian( points, directions, sinogram: Sinogram ):
             }}
             """,
         ),
+        name = "diracs_subspace_hessian",
         output_attributes = [ "H", "b", "sorted_idx", "radix_tmp" ],
         scratch_attributes = [ "sorted_idx", "radix_tmp" ],
         has_dynamic_capacity = False,
