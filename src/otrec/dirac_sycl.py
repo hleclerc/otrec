@@ -61,7 +61,7 @@ def diracs_cost_grad( points, sinogram: Sinogram ):
     grad = RealTensor[ src.num_dirac, src.proj_dim ]()
 
     driver.call(
-        FfiCode(
+        FfiCode.per_item(
             includes = [ "loom/support/atomic_add.h" ],
             # ( `grad` est PARTAGE -- les points sont les memes a tous les angles -- et accumule par
             # `atomic_add`, donc il doit partir de zero. Plus besoin de le dire ici : toute sortie
@@ -196,7 +196,7 @@ def diracs_cost( points, sinogram: Sinogram ):
     cost = RealTensor[ sinogram.num_angle ]()
 
     driver.call(
-        FfiCode(
+        FfiCode.per_item(
             code = """
             {
                 const SI n = SI( src.points.shape( 0 ) );
@@ -315,7 +315,7 @@ def subspace_hessian( points, directions, sinogram: Sinogram ):
     b = RealTensor[ dir_index_i ]()
 
     driver.call(
-        FfiCode(
+        FfiCode.per_item(
             includes = [ "loom/support/atomic_add.h" ],
             # ( `H`/`b` sont PARTAGES -- les diracs sont les memes a tous les angles -- et
             # accumules par `atomic_add`. Comme `grad` plus haut, ils sont semes a zero d'office. )
