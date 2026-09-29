@@ -25,6 +25,7 @@ expose `diracs_cost_grad` avec le même contrat que `optimizers.FusedLBFGS` atte
 """
 import numpy as np
 
+import loom
 from loom import Tensor, Axis, CtShapeVar, driver, RealTensor, IntTensor
 from loom.compilation.FfiCode import FfiCode
 from sdot.distributions.ProjectedSumOfDiracs import ProjectedSumOfDiracs
@@ -60,7 +61,8 @@ def diracs_cost_grad( points, sinogram: Sinogram ):
     cost = RealTensor[ sinogram.num_angle ]()
     grad = RealTensor[ src.num_dirac, src.proj_dim ]()
 
-    driver.call(
+    loom.ffi_call(
+        "diracs_fused_cost_grad",
         FfiCode.per_item(
             includes = [ "loom/support/atomic_add.h" ],
             # ( `grad` est PARTAGE -- les points sont les memes a tous les angles -- et accumule par
@@ -69,14 +71,14 @@ def diracs_cost_grad( points, sinogram: Sinogram ):
             # `CallArg_Tensor.cpp_seed_member`. )
             code = """
             {
-                const SI n = SI( src.points.shape( 0 ) );
-                auto order = sorted_idx( batch_index );
-                auto tmp   = radix_tmp( batch_index );
+                const SI n = SI( inputs.src.points.shape( 0 ) );
+                auto order = scratch.sorted_idx( batch_index );
+                auto tmp   = scratch.radix_tmp( batch_index );
 
-                // vue tranchée à CET angle, construite UNE FOIS -- `src( batch_index )` referait
+                // vue tranchée à CET angle, construite UNE FOIS -- `inputs.src( batch_index )` referait
                 // sinon cette résolution (normale par angle, etc.) à CHAQUE comparaison du tri
                 // (O(n log n) fois) et à chaque pas de la marche `udp_cont` (O(n) fois).
-                auto s = src( batch_index );
+                auto s = inputs.src( batch_index );
 
                 // projection à la volée (pas de tableau [nb_angles, n] matérialisé) : la même
                 // méthode que le chemin C++ général, `ProjectedSumOfDiracs::position`.
@@ -126,7 +128,7 @@ def diracs_cost_grad( points, sinogram: Sinogram ):
                     else              radix_pass( tmp, order, shift );
                 }
 
-                dst( batch_index ).with_defaults( [&]( auto &&img ) {
+                inputs.dst( batch_index ).with_defaults( [&]( auto &&img ) {
                     using TF = DECAYED_TYPE_OF( img.values )::TF;
                     const TF w = TF( 1 ) / TF( n );
 
@@ -147,31 +149,28 @@ def diracs_cost_grad( points, sinogram: Sinogram ):
                         } );
                         const TF b = moment / w;
 
-                        // d cost / d position(i) = 2 w (p - b) ; d position / d point = normal
+                        // d outputs.cost / d position(i) = 2 w (p - b) ; d position / d point = normal
                         // (voir `ProjectedSumOfDiracs::add_position_grad`) -- même formule, mais
-                        // écrite directement dans `grad` (sortie brute) plutôt que via l'indirection
+                        // écrite directement dans `outputs.grad` (sortie brute) plutôt que via l'indirection
                         // `grad_src` que le protocole de différentiation Jax construirait pour un bwd.
                         const TF grad_s = TF( 2 ) * w * ( p - b );
-                        atomic_add( grad( num_dirac = di, proj_dim = 0 ).ref(),
+                        atomic_add( outputs.grad( num_dirac = di, proj_dim = 0 ).ref(),
                                     TF( grad_s * TF( s.normal( proj_dim = 0 ) ) ) );
-                        atomic_add( grad( num_dirac = di, proj_dim = 1 ).ref(),
+                        atomic_add( outputs.grad( num_dirac = di, proj_dim = 1 ).ref(),
                                     TF( grad_s * TF( s.normal( proj_dim = 1 ) ) ) );
                     }
-                    cost( batch_index ) = local_cost;
+                    outputs.cost( batch_index ) = local_cost;
                 } );
             }
             """,
         ),
-        name = "diracs_fused_cost_grad",
-        output_attributes = [ "cost", "grad", "sorted_idx", "radix_tmp" ],
-        scratch_attributes = [ "sorted_idx", "radix_tmp" ],
-        has_dynamic_capacity = False,
         src = src,
         dst = dst,
-        sorted_idx = sorted_idx,
-        radix_tmp = radix_tmp,
-        cost = cost,
-        grad = grad,
+        sorted_idx = loom.scratch( sorted_idx ),
+        radix_tmp = loom.scratch( radix_tmp ),
+        cost = loom.out( cost ),
+        grad = loom.out( grad ),
+        has_dynamic_capacity = False,
     )
 
     return float( np.asarray( cost.value ).sum() ), np.asarray( grad.value )
@@ -195,15 +194,16 @@ def diracs_cost( points, sinogram: Sinogram ):
     radix_tmp = IntTensor[ sinogram.num_angle, src.num_dirac ]()
     cost = RealTensor[ sinogram.num_angle ]()
 
-    driver.call(
+    loom.ffi_call(
+        "diracs_fused_cost_only",
         FfiCode.per_item(
             code = """
             {
-                const SI n = SI( src.points.shape( 0 ) );
-                auto order = sorted_idx( batch_index );
-                auto tmp   = radix_tmp( batch_index );
+                const SI n = SI( inputs.src.points.shape( 0 ) );
+                auto order = scratch.sorted_idx( batch_index );
+                auto tmp   = scratch.radix_tmp( batch_index );
 
-                auto s = src( batch_index );
+                auto s = inputs.src( batch_index );
                 auto proj = [&]( SI i ) { return s.position( i ); };
 
                 for ( SI i = 0; i < n; ++i ) {
@@ -240,7 +240,7 @@ def diracs_cost( points, sinogram: Sinogram ):
                     else              radix_pass( tmp, order, shift );
                 }
 
-                dst( batch_index ).with_defaults( [&]( auto &&img ) {
+                inputs.dst( batch_index ).with_defaults( [&]( auto &&img ) {
                     using TF = DECAYED_TYPE_OF( img.values )::TF;
                     const TF w = TF( 1 ) / TF( n );
 
@@ -253,20 +253,17 @@ def diracs_cost( points, sinogram: Sinogram ):
                             local_cost += item.w2_dist( p );
                         } );
                     }
-                    cost( batch_index ) = local_cost;
+                    outputs.cost( batch_index ) = local_cost;
                 } );
             }
             """,
         ),
-        name = "diracs_fused_cost_only",
-        output_attributes = [ "cost", "sorted_idx", "radix_tmp" ],
-        scratch_attributes = [ "sorted_idx", "radix_tmp" ],
-        has_dynamic_capacity = False,
         src = src,
         dst = dst,
-        sorted_idx = sorted_idx,
-        radix_tmp = radix_tmp,
-        cost = cost,
+        sorted_idx = loom.scratch( sorted_idx ),
+        radix_tmp = loom.scratch( radix_tmp ),
+        cost = loom.out( cost ),
+        has_dynamic_capacity = False,
     )
 
     return float( np.asarray( cost.value ).sum() )
@@ -314,7 +311,8 @@ def subspace_hessian( points, directions, sinogram: Sinogram ):
     H = RealTensor[ dir_index_i, dir_index_j ]()
     b = RealTensor[ dir_index_i ]()
 
-    driver.call(
+    loom.ffi_call(
+        "diracs_subspace_hessian",
         FfiCode.per_item(
             includes = [ "loom/support/atomic_add.h" ],
             # ( `H`/`b` sont PARTAGES -- les diracs sont les memes a tous les angles -- et
@@ -322,13 +320,13 @@ def subspace_hessian( points, directions, sinogram: Sinogram ):
             code = f"""
             {{
                 constexpr SI MAX_DIRS = { MAX_DIRS };
-                const SI n = SI( src.points.shape( 0 ) );
-                auto order = sorted_idx( batch_index );
-                auto tmp   = radix_tmp( batch_index );
+                const SI n = SI( inputs.src.points.shape( 0 ) );
+                auto order = scratch.sorted_idx( batch_index );
+                auto tmp   = scratch.radix_tmp( batch_index );
 
                 // même vue tranchée + même tri radix LSD que `diracs_cost_grad` -- voir ses
                 // commentaires pour le détail (paquet clé+indice, pas de comparateur récursif).
-                auto s = src( batch_index );
+                auto s = inputs.src( batch_index );
                 auto proj = [&]( SI i ) {{ return s.position( i ); }};
 
                 for ( SI i = 0; i < n; ++i ) {{
@@ -348,9 +346,9 @@ def subspace_hessian( points, directions, sinogram: Sinogram ):
                     for ( SI i = 0; i < n; ++i )
                         ++count[ ( SI( from( i ) ) >> shift ) & ( NB_BUCKETS - 1 ) ];
                     SI sum = 0;
-                    for ( int b = 0; b < NB_BUCKETS; ++b ) {{
-                        const SI c = count[ b ];
-                        count[ b ] = sum;
+                    for ( int bucket = 0; bucket < NB_BUCKETS; ++bucket ) {{
+                        const SI c = count[ bucket ];
+                        count[ bucket ] = sum;
                         sum += c;
                     }}
                     for ( SI i = 0; i < n; ++i ) {{
@@ -365,7 +363,7 @@ def subspace_hessian( points, directions, sinogram: Sinogram ):
                     else              radix_pass( tmp, order, shift );
                 }}
 
-                dst( batch_index ).with_defaults( [&]( auto &&img ) {{
+                inputs.dst( batch_index ).with_defaults( [&]( auto &&img ) {{
                     using TF = DECAYED_TYPE_OF( img.values )::TF;
                     const TF w = TF( 1 ) / TF( n );
 
@@ -386,34 +384,31 @@ def subspace_hessian( points, directions, sinogram: Sinogram ):
                         const TF grad_s = TF( 2 ) * w * ( p - bary );
 
                         // projection de chaque direction stockée sur la normale de CET angle, à
-                        // CE dirac -- `e_i = directions[i][di]·normal`, le coefficient affine de
+                        // CE dirac -- `e_i = inputs.directions[i][di]·normal`, le coefficient affine de
                         // `p(a)` en `a_i` (voir la docstring de la fonction).
                         TF e[ MAX_DIRS ];
                         for ( SI i = 0; i < MAX_DIRS; ++i )
-                            e[ i ] = TF( directions( dir_index_i = i, num_dirac = di, proj_dim = 0 ) ) * TF( s.normal( proj_dim = 0 ) )
-                                   + TF( directions( dir_index_i = i, num_dirac = di, proj_dim = 1 ) ) * TF( s.normal( proj_dim = 1 ) );
+                            e[ i ] = TF( inputs.directions( dir_index_i = i, num_dirac = di, proj_dim = 0 ) ) * TF( s.normal( proj_dim = 0 ) )
+                                   + TF( inputs.directions( dir_index_i = i, num_dirac = di, proj_dim = 1 ) ) * TF( s.normal( proj_dim = 1 ) );
 
                         for ( SI i = 0; i < MAX_DIRS; ++i ) {{
-                            atomic_add( b( dir_index_i = i ).ref(), grad_s * e[ i ] );
+                            atomic_add( outputs.b( dir_index_i = i ).ref(), grad_s * e[ i ] );
                             for ( SI j = 0; j < MAX_DIRS; ++j )
-                                atomic_add( H( dir_index_i = i, dir_index_j = j ).ref(), TF( 2 ) * w * e[ i ] * e[ j ] );
+                                atomic_add( outputs.H( dir_index_i = i, dir_index_j = j ).ref(), TF( 2 ) * w * e[ i ] * e[ j ] );
                         }}
                     }}
                 }} );
             }}
             """,
         ),
-        name = "diracs_subspace_hessian",
-        output_attributes = [ "H", "b", "sorted_idx", "radix_tmp" ],
-        scratch_attributes = [ "sorted_idx", "radix_tmp" ],
-        has_dynamic_capacity = False,
         src = src,
         dst = dst,
         directions = directions_t,
-        sorted_idx = sorted_idx,
-        radix_tmp = radix_tmp,
-        H = H,
-        b = b,
+        sorted_idx = loom.scratch( sorted_idx ),
+        radix_tmp = loom.scratch( radix_tmp ),
+        H = loom.out( H ),
+        b = loom.out( b ),
+        has_dynamic_capacity = False,
     )
 
     return np.asarray( H.value ), np.asarray( b.value )
