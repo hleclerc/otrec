@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.venv/
+
+# sorties de compilation
+build/
+*.o
+*.a
+*.so
+*.so.p
+*.dylib
+compile_commands.json
+
+# les sorties de bancs d'essai ( html, png ) : on garde le code, pas ses resultats
+benchmarks/results/
+
+# le runner ( errand )
+.errand/
+runs/
+
+# divers
+tmp/
+.cache/
