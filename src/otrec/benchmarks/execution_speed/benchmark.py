@@ -73,7 +73,7 @@ def benchmark_execution_speed(
     model_bary = DiracModel( sino, with_barycenters = True )
 
     def scalar_loss( p ):
-        return model.cost( model.wrap( p ) ).tensor
+        return model.cost( model.wrap( p ) ).value
 
     # `positions` est le SEUL argument tracé : ce gradient ne porte déjà que sur les positions
     # des diracs, jamais sur le sinogramme (fixe, capturé par la closure). Avec `with_barycenters
@@ -81,7 +81,7 @@ def benchmark_execution_speed(
     # balayer chaque angle (voir `OtPlan1d.__init__`'s docstring / [[projected-source-fusion]]) --
     # comparé ci-dessous au cas par défaut (`with_barycenters = False`) pour mesurer le gain.
     def scalar_loss_bary( p ):
-        return model_bary.cost( model_bary.wrap( p ) ).tensor
+        return model_bary.cost( model_bary.wrap( p ) ).value
 
     loss_j = driver.jit( scalar_loss )
     grad_j = driver.jit( driver.grad( scalar_loss ) )

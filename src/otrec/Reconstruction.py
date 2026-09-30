@@ -281,7 +281,7 @@ class Reconstruction:
             callback( -1, model.wrap( p ) )
 
         def scalar_loss( q ):
-            return model.cost( model.wrap( q ) ).tensor
+            return model.cost( model.wrap( q ) ).value
 
         def step_callback( step, x ):
             nb_steps[ 0 ] = step + 1

@@ -690,7 +690,7 @@ def run_disks_alpha_profile(
     print( f"{ nb_captured } pas obtenus en { time.time() - t0:.1f}s" )
 
     def scalar_loss( q ):
-        return model.cost( model.wrap( q ) ).tensor
+        return model.cost( model.wrap( q ) ).value
     loss_j = driver.jit( scalar_loss )
     grad_j = driver.jit( driver.grad( scalar_loss ) )
 

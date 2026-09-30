@@ -28,7 +28,7 @@ if test( "diracs_cost_grad_matches_pure_jax" ):
 
     model = DiracModel( sino )
     def scalar_loss( p ):
-        return model.cost( model.wrap( p ) ).tensor
+        return model.cost( model.wrap( p ) ).value
     cost_jax = float( driver.jit( scalar_loss )( pts ) )
     grad_jax = np.asarray( driver.jit( driver.grad( scalar_loss ) )( pts ) )
 
@@ -49,7 +49,7 @@ if test( "diracs_cost_grad_single_angle" ):
 
     model = DiracModel( sino )
     def scalar_loss( p ):
-        return model.cost( model.wrap( p ) ).tensor
+        return model.cost( model.wrap( p ) ).value
     cost_jax = float( driver.jit( scalar_loss )( pts ) )
     grad_jax = np.asarray( driver.jit( driver.grad( scalar_loss ) )( pts ) )
 

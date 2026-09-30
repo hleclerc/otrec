@@ -110,7 +110,7 @@ class DiskProjector:
         `clip`, donc plus de NaN ni d'annulation possible.
         """
         r = self.radius
-        s0 = self.sinogram.project_points( centers ).tensor          # [ nb_angles, nb_disques ]
+        s0 = self.sinogram.project_points( centers ).value          # [ nb_angles, nb_disques ]
         u = self.edges[ None, None, : ] - s0[ :, :, None ]           # [ nb_angles, nb_disques, nb_pixels + 1 ]
 
         t = driver.clip( u, -r, r )
@@ -155,7 +155,7 @@ class DiskProjector:
 
         nb_disks = int( pts.shape[ 0 ] )
         chunk = self._chunk_size( nb_disks )
-        raw = pts.tensor
+        raw = pts.value
 
         if chunk >= nb_disks:
             acc = self._values_of_chunk( raw )                       # une seule tranche : pas de boucle

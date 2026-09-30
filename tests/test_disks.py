@@ -86,7 +86,7 @@ if test( "disk_projection_gradient" ):
     proj = DiskProjector( sino, radius = radius )
 
     def scalar( c ):
-        return driver.sum( proj.values( c ).tensor ** 2 )
+        return driver.sum( proj.values( c ).value ** 2 )
 
     g = np.asarray( driver.grad( scalar )( driver.array( truth ) ) )
     assert np.all( np.isfinite( g ) ), f"gradient non fini : { g }"
@@ -118,7 +118,7 @@ if test( "disk_chunked_matches_unchunked" ):
     assert whole._chunk_size( len( truth ) ) == len( truth ), "ce cas doit tenir en une tranche"
 
     def scalar( proj, c ):
-        return driver.sum( proj.values( c ).tensor ** 2 )
+        return driver.sum( proj.values( c ).value ** 2 )
 
     ref_v = np.asarray( whole.values( truth ) )
     ref_g = np.asarray( driver.grad( lambda c: scalar( whole, c ) )( driver.array( truth ) ) )
@@ -194,7 +194,7 @@ if test( "disk_loss_gradient" ):
     start = truth + np.array( [ [ 0.25, -0.15 ], [ -0.2, 0.3 ] ] )
 
     def scalar( c ):
-        return model.cost( model.wrap( c ) ).tensor
+        return model.cost( model.wrap( c ) ).value
 
     g = np.asarray( driver.grad( scalar )( driver.array( start ) ) )
     assert np.all( np.isfinite( g ) ), f"gradient non fini : { g }"

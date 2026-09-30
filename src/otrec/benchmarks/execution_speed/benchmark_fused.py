@@ -58,7 +58,7 @@ def benchmark_fused_vs_jax(
     # (`with_barycenters=False`, voir `Reconstruction.dirac_model`).
     model = DiracModel( sino )
     def scalar_loss( p ):
-        return model.cost( model.wrap( p ) ).tensor
+        return model.cost( model.wrap( p ) ).value
     grad_j = driver.jit( driver.grad( scalar_loss ) )
 
     # kernel SYCL fusionné : un seul appel donne (coût, gradient) -- pas de `driver.jit`/`driver.grad`

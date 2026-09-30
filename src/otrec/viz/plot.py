@@ -51,7 +51,7 @@ def plot(
     # losses_adam = []
     # start_time_adam = time.time()
     # def callback_adam(step, pos):
-    #     l = float( loss( sino, pos ).tensor )
+    #     l = float( loss( sino, pos ).value )
     #     losses_adam.append( l )
     #     if verbose and (step + 1) % max(1, (step + 100) // 20) == 0:
     #         elapsed = time.time() - start_time_adam
