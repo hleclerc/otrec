@@ -77,7 +77,7 @@ def _ot1d_disks_angle(sino_row, bin_centers_src, mass_tgt, pix_edges):
     rôles").
 
     A direct port of `sdot.distributions._pure_jax_cost1d.cost_1d_ot` — the
-    closed-form pure-Jax path `OtPlan1d` itself uses for a dirac-source vs.
+    closed-form pure-Jax path `SdotPlan1d` itself uses for a dirac-source vs.
     `Image` pair — since `HcReconstruction` avoids importing loom/sdot (see
     the package docstring). Ported rather than hand re-derived: a from-scratch
     derivation (accumulating one GLOBAL target second-moment plus a per-
@@ -85,7 +85,7 @@ def _ot1d_disks_angle(sino_row, bin_centers_src, mass_tgt, pix_edges):
     from this reference whenever the source carries a NEGATIVE weight (e.g.
     a phantom with a negative-density disk, so a `sino_row` entry < 0) —
     `cost_1d_ot`'s per-matched-window accumulation of the target's 2nd
-    moment (`dM2`, not a global constant split off) is what `OtPlan1d`'s own
+    moment (`dM2`, not a global constant split off) is what `SdotPlan1d`'s own
     C++ kernel agrees with in that case too (a known, matched quirk, see
     `cost_1d_ot`'s own docstring — not "more correct" OT theory, just the
     behaviour this reimplementation must match). Both sides are normalized

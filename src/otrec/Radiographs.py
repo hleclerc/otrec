@@ -7,7 +7,7 @@ IMAGES 2D : `values[ num_angle, num_u, num_v ]`.
 
 Usage : on part de zéro et on accumule des primitives dont la projection est connue analytiquement
 ( `add_sphere` ). `image( k )` / `batched_image()` présentent les radiographies comme des `Image`
-2D, consommables comme distribution cible d'un `OtPlan` ( le transport semi-discret 2D ).
+2D, consommables comme distribution cible d'un `SdotPlanNd` ( le transport semi-discret 2D ).
 
 Conventions géométriques -- une rotation autour de l'axe `z`, comme un tomographe :
 - angles θ_k = k·π/nb_angles, régulièrement répartis sur [0, π) ;
@@ -124,8 +124,8 @@ class Radiographs( Aggregate ):
 
         Le point de départ qu'une reconstruction veut : un dirac dont une projection tombe dans le
         vide n'a, à cet angle, qu'une cellule de mesure quasi nulle, et le transport qui doit
-        l'amener jusqu'à l'ombre est aussi mal conditionné qu'il est loin ( voir `OtPlan`,
-        le Newton de `OtPlan` ). L'enveloppe visuelle contient l'objet, et c'est déjà lui à peu
+        l'amener jusqu'à l'ombre est aussi mal conditionné qu'il est loin ( voir `SdotPlanNd`,
+        le Newton de `SdotPlanNd` ). L'enveloppe visuelle contient l'objet, et c'est déjà lui à peu
         de choses près quand les angles sont assez nombreux.
         """
         rng = np.random.default_rng( seed )
@@ -196,7 +196,7 @@ class Radiographs( Aggregate ):
         monde ), chacune séparément -- un nouveau `Radiographs` de même géométrie.
 
         Ce que le flou achète : plus de ZÉROS. Une radiographie de boules est nulle hors de
-        leurs ombres, et un dirac qui y projette n'a ni cellule ni gradient ( voir `OtPlan` ) ;
+        leurs ombres, et un dirac qui y projette n'a ni cellule ni gradient ( voir `SdotPlanNd` ) ;
         floutée à l'échelle du domaine ( `sigma ~ extent` ), elle est une bosse positive partout,
         et le transport est doux. Une reconstruction commence là et resserre le flou
         ( `Reconstruction.anneal_blur` ). Le bord du détecteur est prolongé par zéro : ce qui
@@ -225,7 +225,7 @@ class Radiographs( Aggregate ):
         `background` : une densité ajoutée PARTOUT ( en fraction de la valeur moyenne de l'angle )
         -- ce qu'un transport semi-discret demande pour qu'aucune cellule de Laguerre ne soit de
         mesure nulle ( un dirac projeté hors de l'ombre de l'objet n'aurait sinon aucun gradient,
-        voir `OtPlan` ). Une radiographie de boules est nulle hors de leurs ombres.
+        voir `SdotPlanNd` ). Une radiographie de boules est nulle hors de leurs ombres.
         """
         vals = np.asarray( self.values )[ k ]
         if background:

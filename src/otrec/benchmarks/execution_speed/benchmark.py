@@ -58,7 +58,7 @@ def benchmark_execution_speed(
 ):
     """Construit un problème de reconstruction représentatif et chronomètre `loss` et son gradient.
 
-    `DiracModel.cost` est un unique `OtPlan1d` BATCHÉ sur les angles (voir `models.py`) -- ce chrono
+    `DiracModel.cost` est un unique `SdotPlan1d` BATCHÉ sur les angles (voir `models.py`) -- ce chrono
     mesure donc le débit du kernel batché réel, pas une boucle Python par angle. On appelle le
     MODÈLE directement (et non une étape de `Reconstruction`) : ici on ne veut chronométrer que le
     coût et son gradient, sans optimiseur autour. Renvoie un dict de timings, imprimé par
@@ -77,8 +77,8 @@ def benchmark_execution_speed(
 
     # `positions` est le SEUL argument tracé : ce gradient ne porte déjà que sur les positions
     # des diracs, jamais sur le sinogramme (fixe, capturé par la closure). Avec `with_barycenters
-    # = True`, le backward d'`OtPlan1d` lit les barycentres stockés au lieu de re-trier + re-
-    # balayer chaque angle (voir `OtPlan1d.__init__`'s docstring / [[projected-source-fusion]]) --
+    # = True`, le backward d'`SdotPlan1d` lit les barycentres stockés au lieu de re-trier + re-
+    # balayer chaque angle (voir `SdotPlan1d.__init__`'s docstring / [[projected-source-fusion]]) --
     # comparé ci-dessous au cas par défaut (`with_barycenters = False`) pour mesurer le gain.
     def scalar_loss_bary( p ):
         return model_bary.cost( model_bary.wrap( p ) ).value
@@ -95,7 +95,7 @@ def benchmark_execution_speed(
     t_compile_grad, t_steady_grad = _time_steady( grad_j, positions, nb_calls )
     t_compile_grad_bary, t_steady_grad_bary = _time_steady( grad_bary_j, positions, nb_calls )
 
-    # un `OtPlan1d` (taille nb_diracs) par angle est résolu à chaque appel de loss/grad (batché).
+    # un `SdotPlan1d` (taille nb_diracs) par angle est résolu à chaque appel de loss/grad (batché).
     nb_ot_solves = nb_angles
 
     print( driver.ftype.cpp_name )

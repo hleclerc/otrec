@@ -17,7 +17,7 @@ Conventions géométriques :
 
 `values[ k ]` est la fonction constante par morceaux du profil à l'angle k ;
 `image( k )` la présente comme `Image` 1D (en coordonnées détecteur réelles),
-directement consommable comme distribution cible d'un `OtPlan1d`.
+directement consommable comme distribution cible d'un `SdotPlan1d`.
 """
 import numpy as np
 
@@ -147,7 +147,7 @@ class Sinogram( Aggregate ):
     def image( self, k: int ) -> Image:
         """`Image` 1D du profil à l'angle k, en coordonnées détecteur réelles.
 
-        Utilisable directement comme distribution cible d'un `OtPlan1d`.
+        Utilisable directement comme distribution cible d'un `SdotPlan1d`.
         """
         return Image(
             values = self.values[ k ],
@@ -158,7 +158,7 @@ class Sinogram( Aggregate ):
     def batched_image( self ) -> Image:
         """Tous les profils d'un coup : une `Image` BATCHÉE sur `num_angle` (l'axe de batch existe
         déjà ici -- c'est celui des `values`). `origin`/`frame`, identiques à tous les angles, sont
-        PARTAGÉS (non batchés). Sert de distribution cible à un `OtPlan1d` batché, sans boucle Python.
+        PARTAGÉS (non batchés). Sert de distribution cible à un `SdotPlan1d` batché, sans boucle Python.
         """
         return Image(
             values = self.values,                       # [ num_angle, num_bin ]
@@ -176,7 +176,7 @@ class Sinogram( Aggregate ):
         """Corrige un sinogramme dont l'objet DÉPASSE le détecteur (rayon > extent/2) : la
         fenêtre visible ne redescend alors plus jusqu'à 0 (on ne voit qu'un morceau central de
         l'objet), et la masse mesurée VARIE selon l'angle (la largeur d'ombre tronquée dépend de
-        l'orientation). `OtPlan1d` rétablit déjà l'égalité de masse src/dst via
+        l'orientation). `SdotPlan1d` rétablit déjà l'égalité de masse src/dst via
         `normalized_version` (un RESCALE multiplicatif par angle) -- correct pour une vraie
         distribution de densité, mais ici ça revient à gonfler artificiellement la partie visible
         d'un angle très tronqué, déformant la forme reconstruite. Un décalage ADDITIF est plus

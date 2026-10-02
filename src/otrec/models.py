@@ -6,7 +6,7 @@ fonction que `Reconstruction` (`Reconstruction.py`) fait décroître ; le modèl
 endroit qui sait de quelle façon les points sont comparés à la donnée.
 
 Les deux modèles disponibles s'appuient tous deux sur le transport optimal 1D semi-discret
-(`OtPlan1d`, batché sur les angles), mais ils en ÉCHANGENT les rôles :
+(`SdotPlan1d`, batché sur les angles), mais ils en ÉCHANGENT les rôles :
 
 - `DiracModel` : les points sont l'INCONNUE vue comme des diracs de masse égale, projetés à la
   volée sur chaque détecteur ; la CIBLE est le profil mesuré, fonction constante par morceaux.
@@ -21,7 +21,7 @@ Ils exposent la même interface (`name`, `point_axis`, `cost`, `radii`, `floor`)
 diracs puis raffiné en centres de disques.
 
 En 3D ( des `Radiographs`, une image 2D par angle ), `ProjectedDiracModel` joue le rôle de
-`DiracModel` avec un transport semi-discret 2D par angle ( `OtPlan` ) -- et ne propose que
+`DiracModel` avec un transport semi-discret 2D par angle ( `SdotPlanNd` ) -- et ne propose que
 l'évaluation FUSIONNÉE coût + gradient ( voir sa docstring ).
 """
 import warnings
@@ -31,7 +31,7 @@ from loom import Tensor
 from loom import RealTensor
 import numpy as np
 
-from sdot import OtPlan, OtPlan1d, ProjectedSumOfDiracs, SumOfDiracs, SumOfDiracs1d
+from sdot import Iterative, OtProblem, ProjectedSumOfDiracs, SdotPlan1d, SumOfDiracs, SumOfDiracs1d
 
 from .Radiographs import Radiographs
 from .Sinogram import Sinogram
@@ -87,10 +87,10 @@ class DiracModel( Model ):
     angles). Reste différentiable : le backward scatter-atomique le gradient de la position
     projetée sur les points 2D partagés.
 
-    `with_barycenters` : transmis tel quel à `OtPlan1d`. Quand le SEUL gradient demandé est celui
+    `with_barycenters` : transmis tel quel à `SdotPlan1d`. Quand le SEUL gradient demandé est celui
     des positions (le cas ici), stocker les barycentres évite au backward de re-trier + re-balayer
     chaque angle, au prix d'un buffer `[ nb_angles, n ]` -- à activer si ce coût mémoire est
-    acceptable (voir la docstring d'`OtPlan1d.__init__`).
+    acceptable (voir la docstring d'`SdotPlan1d.__init__`).
     """
 
     name = "diracs"
@@ -105,7 +105,7 @@ class DiracModel( Model ):
         src = ProjectedSumOfDiracs( points = pts, normal = self.sinogram.normals_t,
                                     batch_axes = [ self.sinogram.num_angle ] )
         dst = self.sinogram.batched_image()
-        return OtPlan1d( src, dst, with_barycenters = self.with_barycenters ).cost.sum()  # somme sur les angles
+        return SdotPlan1d( src, dst, with_barycenters = self.with_barycenters ).cost.sum()  # somme sur les angles
 
     def value_and_grad( self, points ):
         """`(cost, grad)` fusionnés via le kernel SYCL (`dirac_sycl.diracs_cost_grad`) -- même
@@ -156,7 +156,7 @@ class DiskModel( Model ):
     def cost( self, points ) -> Tensor:
         src = sinogram_diracs( self.sinogram )
         dst = self.projector.image( points )
-        return OtPlan1d( src, dst ).cost.sum()                        # somme sur les angles
+        return SdotPlan1d( src, dst ).cost.sum()                        # somme sur les angles
 
     @property
     def floor( self ) -> float:
@@ -169,19 +169,19 @@ class DiskModel( Model ):
 class ProjectedDiracModel( Model ):
     """Les points sont des DIRACS 3D de masse égale, confrontés à des RADIOGRAPHIES
     ( `Radiographs` ) : à chaque angle, leurs projections sur le détecteur sont transportées vers
-    l'image mesurée par un transport semi-discret 2D ( `OtPlan`, un diagramme de puissance par
+    l'image mesurée par un transport semi-discret 2D ( `SdotPlanNd`, un diagramme de puissance par
     angle ), et le coût est la somme sur les angles des `W_2^2`.
 
     Le pendant 3D de `DiracModel`, avec une différence de nature : le transport 1D est EXACT ( un
-    tri ), le transport 2D est un AJUSTEMENT de poids ( `OtPlan._fit`, itératif ). D'où :
+    tri ), le transport 2D est un AJUSTEMENT de poids ( `SdotPlanNd._fit`, itératif ). D'où :
 
     - le gradient par rapport aux points ne passe pas par l'autodiff mais par le théorème de
       l'ENVELOPPE, aux poids ajustés : `2 m_i ( p_i - b_i )` sur le détecteur ( `b_i` le barycentre
-      de la cellule de Laguerre, voir `OtPlan.cost_and_position_grad` ), puis remonté en 3D par la
+      de la cellule de Laguerre, voir `SdotPlanNd.cost_and_position_grad` ), puis remonté en 3D par la
       transposée de la projection ( `Radiographs.unproject_grad` ). Le modèle n'a donc qu'un
       `value_and_grad` fusionné ( `FusedLBFGS` ) -- `cost` rend un flottant, pas un `Tensor` ;
-    - chaque angle est résolu par le Newton amorti de `OtPlan` ( tout en C++ ), et les
-      poids ajustés sont GARDÉS d'une évaluation à l'autre ( `weights0` du prochain `OtPlan` ) :
+    - chaque angle est résolu par le Newton amorti de `SdotPlanNd` ( tout en C++ ), et les
+      poids ajustés sont GARDÉS d'une évaluation à l'autre ( `weights0` du prochain `SdotPlanNd` ) :
       des points qui bougent peu demandent des poids qui bougent peu, quelques pas suffisent. C'est
       un cache, pas un état -- le résultat n'en dépend pas, et il n'a plus à être écarté quand il
       vide une cellule : le C++ choisit lui-même le meilleur des trois départs qu'il connaît ( les
@@ -195,7 +195,7 @@ class ProjectedDiracModel( Model ):
     - la radiographie reçoit un FOND ( `background`, en fraction de sa valeur moyenne ), et il
       reste INDISPENSABLE : une boule projetée est nulle hors de son ombre, et une cellule qui ne
       voit que des zéros n'a AUCUN poids qui lui donne sa masse -- le problème n'a pas de solution,
-      pas seulement un mauvais départ. La CONTINUATION EN LARGEUR d'`OtPlan`
+      pas seulement un mauvais départ. La CONTINUATION EN LARGEUR d'`SdotPlanNd`
       ( `continuation = "auto"` : la densité convolée large d'abord, resserrée étape par étape,
       chacune repartant des poids de la précédente ) adoucit le CHEMIN, pas la cible : sa dernière
       étape est la densité elle-même, zéros compris. Mesuré ( 200 diracs, 6 angles, 64 x 64,
@@ -221,14 +221,14 @@ class ProjectedDiracModel( Model ):
                   mass_tol: float = 1e-4, kernel_dtype = None, continuation: str = "auto",
                   strict: bool = False ) -> None:
         """`background`, `max_iter`, `mass_tol`, `continuation` : voir la docstring de la classe et
-        `OtPlan`. Le Newton est celui de KMT, amorti ( le Newton NON amorti a été mesuré 5 à 50 fois
+        `SdotPlanNd`. Le Newton est celui de KMT, amorti ( le Newton NON amorti a été mesuré 5 à 50 fois
         plus lent, floutage ou pas -- voir `notes/2026-09-14-reconstruction-3d.md` -- et n'existe
         plus ), le pas venant des LIMITES puisqu'une projection est 2D.
 
         `mass_tol` est RELATIF à la masse d'un dirac ( `1 / n` ) -- et borné par ce que le noyau
         sait : en FP32, l'aire d'une cellule n'est connue qu'à ~1e-5 près en relatif, en dessous le
         Newton ne trouve plus de pas qui baisse le résidu. D'où `kernel_dtype = None` par défaut,
-        qui laisse `OtPlan` couper en FP64 -- FP32 est à réserver aux essais.
+        qui laisse `SdotPlanNd` couper en FP64 -- FP32 est à réserver aux essais.
 
         `strict` : lever dès qu'un angle ne converge pas, au lieu de le compter dans
         `solver_stats` et de rendre quand même le coût ( un ajustement inachevé donne un gradient
@@ -238,12 +238,16 @@ class ProjectedDiracModel( Model ):
         self.background = float( background )
         self.max_iter = int( max_iter )
         self.mass_tol = float( mass_tol )
-        self.kernel_dtype = kernel_dtype
+        self.precision = { None: "auto", "FP64": "fp64", "FP32": "fp32" }.get( kernel_dtype, kernel_dtype )
         self.continuation = continuation
         self.strict = bool( strict )
         nb_angles = int( radiographs.nb_angles.value )
         self._images = [ radiographs.image( k, background = self.background ) for k in range( nb_angles ) ]
-        self._weights = [ None ] * nb_angles
+        # UN PROBLEME PAR ANGLE, gardé d'une évaluation à l'autre : c'est lui qui porte les poids de
+        # la dernière solution, donc le ré-échauffement n'a plus à être recopié ici ( voir
+        # `OtProblem.solve` ). Construit paresseusement -- la source n'existe qu'à la première
+        # évaluation, et elle change de taille d'un étage de `Reconstruction.multiscale` à l'autre.
+        self._problems = [ None ] * nb_angles
         # une cible qui garde des pixels NULS ne se transporte pas ( voir la docstring de la classe :
         # mesuré, les ajustements n'y convergent pas et la perte monte ). On le dit une fois, au lieu
         # de laisser une descente de plusieurs heures rendre un nuage faux.
@@ -260,17 +264,18 @@ class ProjectedDiracModel( Model ):
     def _plan( self, k, uv ):
         """le transport de l'angle `k`, ajusté -- en repartant des poids de la dernière fois"""
         # le NEWTON sur la fonctionnelle duale : un nombre de pas indépendant du nombre de diracs,
-        # et, d'une évaluation à l'autre ( `weights0` ), quelques pas seulement. Des poids qui
-        # vident une cellule ne sont plus écartés ici : le C++ compare lui-même les trois départs
+        # et, d'une évaluation à l'autre, quelques pas seulement -- `OtProblem` garde les poids de
+        # sa dernière solution et les reprend comme départ, y compris quand le nuage a changé de
+        # TAILLE ( un étage de `Reconstruction.multiscale` : il les périme alors de lui-même ). Des
+        # poids qui vident une cellule ne sont pas écartés : le C++ compare lui-même les départs
         # qu'il connaît et garde le meilleur ( `stats[ "depart" ]` ).
-        kw = dict( max_iter = self.max_iter, mass_tol = self.mass_tol / len( uv ),
-                   kernel_dtype = self.kernel_dtype, continuation = self.continuation )
-        # un nuage qui a changé de TAILLE ( un étage de `Reconstruction.multiscale` ) repart de zéro
-        w0 = self._weights[ k ]
-        if w0 is not None and len( w0 ) != len( uv ):
-            w0 = None
-        plan = OtPlan( SumOfDiracs( uv ), self._images[ k ], weights0 = w0, **kw )
-        self._weights[ k ] = plan.weights
+        pb = self._problems[ k ]
+        if pb is None:
+            pb = self._problems[ k ] = OtProblem( SumOfDiracs( uv ), self._images[ k ] )
+        else:
+            pb.source = SumOfDiracs( uv )
+        plan = pb.solve( Iterative( max_iter = self.max_iter, tol = self.mass_tol / len( uv ),
+                                    precision = self.precision, continuation = self.continuation ) )
         self._account( k, plan )
         return plan
 
@@ -333,7 +338,7 @@ def sinogram_diracs( sinogram: Sinogram ) -> SumOfDiracs1d:
 
     Les positions (centres de cases) sont les mêmes à tous les angles : elles sont donc PARTAGÉES
     (`[ nb_bins ]`, pas `[ nb_angles, nb_bins ]`) ; seuls les poids sont batchés. C'est ce que
-    `raw_1d_diracs` transmet ensuite au chemin pur Jax d'`Image.try_update_otplan1d`, qui ne
+    `raw_1d_diracs` transmet ensuite au chemin pur Jax d'`Image.try_update_sdotplan1d`, qui ne
     matérialise jamais plus d'un angle à la fois.
     """
     return SumOfDiracs1d(

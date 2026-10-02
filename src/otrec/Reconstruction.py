@@ -379,7 +379,7 @@ class Reconstruction:
         gradients qui portent loin, un nuage mal placé s'y range en douceur, et chaque étage suivant
         part d'un nuage déjà à sa place pour une cible à peine plus nette.
 
-        À ne pas confondre avec la CONTINUATION EN LARGEUR d'`OtPlan` ( `continuation = "auto"` ),
+        À ne pas confondre avec la CONTINUATION EN LARGEUR d'`SdotPlanNd` ( `continuation = "auto"` ),
         qui floute la même densité mais à l'INTÉRIEUR d'un ajustement, pour trouver les POIDS d'un
         nuage donné : ses étapes finissent sur la donnée TELLE QUELLE, donc elle ne dispense ni du
         `background` ( une cellule qui ne voit que des zéros n'a pas de poids qui lui donne sa

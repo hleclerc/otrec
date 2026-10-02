@@ -2,20 +2,20 @@
 en UN SEUL `driver.call` fwd-only -- sans `backward`, donc sans passer par l'autodiff Jax : le
 gradient est écrit directement par le kernel, formule fermée `(point - barycentre) * direction`,
 au lieu d'un `jax.grad` à travers `_pure_jax_cost1d.cost_1d_ot` (le chemin par défaut,
-`Image.try_update_otplan1d`) ou du couple fwd/bwd `OtPlan1d.cxx` (le chemin C++ général).
+`Image.try_update_sdotplan1d`) ou du couple fwd/bwd `SdotPlan1d.cxx` (le chemin C++ général).
 
 Motivation : comparer la vitesse d'un noyau qui fusionne les DEUX passes (coût ET gradient, la
-même formule que `OtPlan1d.cxx::sweep_outputs_bwd`'s barycentre-recompute branch, mais calculé
+même formule que `SdotPlan1d.cxx::sweep_outputs_bwd`'s barycentre-recompute branch, mais calculé
 UNE FOIS au lieu de deux) contre le pipeline pur Jax actuellement utilisé par
-`Reconstruction.diracs`. Volontairement plus simple que `OtPlan1d` : un seul work-item par angle
-(même tri radix LSD par paquet clé+index que `OtPlan1d.cxx::sort_diracs`, mais SANS sa coopération
+`Reconstruction.diracs`. Volontairement plus simple que `SdotPlan1d` : un seul work-item par angle
+(même tri radix LSD par paquet clé+index que `SdotPlan1d.cxx::sort_diracs`, mais SANS sa coopération
 de groupe -- un seul thread suffit puisqu'il traite tout l'angle -- et pas la marche
 `udp_at`/`cell_cum_mass` -- un simple `udp_start` séquentiel suffit pour la même raison).
 Repousser la coopération de groupe à une étape ultérieure si cette référence s'avère prometteuse
 à plus grande échelle.
 
 Réutilise `ProjectedSumOfDiracs`/`Image` TELS QUELS (mêmes structs C++, mêmes méthodes
-`position(i)`/`udp_start`/`udp_cont` que `OtPlan1d.cxx`) -- seule l'orchestration (tri + balayage
+`position(i)`/`udp_start`/`udp_cont` que `SdotPlan1d.cxx`) -- seule l'orchestration (tri + balayage
 + dispersion du gradient) est nouvelle.
 
 S'est avéré assez prometteur (10-30x plus rapide que le chemin Jax mesuré sur le poumon, voir
@@ -46,7 +46,7 @@ def diracs_cost_grad( points, sinogram: Sinogram ):
     """
     pts = points if isinstance( points, Tensor ) else RealTensor( points )
 
-    # `src`/`dst` normalisés à masse 1 -- exactement ce que fait `OtPlan1d.__init__` avant de
+    # `src`/`dst` normalisés à masse 1 -- exactement ce que fait `SdotPlan1d.__init__` avant de
     # balayer (voir sa docstring) : sans ça la marche `udp_cont` (dont les prises `w` par dirac
     # doivent épuiser exactement la masse totale de l'image) ne balaierait pas l'image en entier.
     # `src` n'a pas de poids explicites -> `normalized_version()` donnerait des poids UNIFORMES
@@ -85,7 +85,7 @@ def diracs_cost_grad( points, sinogram: Sinogram ):
                 auto proj = [&]( SI i ) { return s.position( i ); };
 
                 // Tri radix LSD itératif O(n), PAS de comparateur (pas de récursion -- même
-                // contrainte SSCP qui a écarté std::sort/introsort, voir OtPlan1d.cxx::sort_diracs,
+                // contrainte SSCP qui a écarté std::sort/introsort, voir SdotPlan1d.cxx::sort_diracs,
                 // dont ce bloc est une version simplifiée SANS coopération de groupe, un seul
                 // work-item traitant tout l'angle). On PAQUETTE, dans chaque case int64 de `order`,
                 // une clé float32 ordonnée (bits IEEE retournés pour préserver l'ordre) dans les

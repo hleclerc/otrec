@@ -15,8 +15,8 @@ n_k = (cos, sin), coordonnée détecteur s = p.n_k). La grille de l'image modèl
 étendue que le détecteur, mais peut être plus fine (`nb_pixels`) pour représenter correctement
 la projection d'un disque de petit rayon.
 
-Tout est BATCHÉ sur `num_angle` : un seul `OtPlan1d` traite les `nb_angles` transports, et le
-chemin pris est celui, purement Jax, de `Image.try_update_otplan1d` (aucun kernel C++).
+Tout est BATCHÉ sur `num_angle` : un seul `SdotPlan1d` traite les `nb_angles` transports, et le
+chemin pris est celui, purement Jax, de `Image.try_update_sdotplan1d` (aucun kernel C++).
 """
 import numpy as np
 
@@ -28,7 +28,7 @@ from .Sinogram import Sinogram
 
 class DiskProjector:
     """Projection différentiable d'une union de disques de RAYON FIXE, discrétisée en une
-    fonction constante par morceaux par angle -- l'`Image` batchée que consomme `OtPlan1d`.
+    fonction constante par morceaux par angle -- l'`Image` batchée que consomme `SdotPlan1d`.
 
     La géométrie (angles, étendue détecteur, grille image, rayon) est fixée à la construction ;
     seuls les CENTRES varient d'un appel à l'autre -- ce sont eux l'inconnue de l'optimisation.
@@ -180,7 +180,7 @@ class DiskProjector:
 
     def image( self, centers ) -> Image:
         """La projection comme `Image` 1D batchée sur `num_angle` -- directement consommable comme
-        distribution d'un `OtPlan1d`.
+        distribution d'un `SdotPlan1d`.
 
         `current_mass` est fourni explicitement (`somme des densités * largeur de case`, la
         définition même de la mesure d'une image constante par morceaux 1D) plutôt que laissé à

@@ -3,7 +3,7 @@
 Quand la pièce observée est plus large que le détecteur, chaque profil mesuré contient la
 contribution de matière qui n'est PAS reconstructible : à l'angle θ, un point de rayon r > S
 (S = extent/2) n'est vu que sur la fenêtre angulaire `2·arcsin( S/r )`. La masse mesurée
-`∫p_θ` varie donc avec l'angle, alors que `OtPlan1d` normalise les deux distributions à masse 1 :
+`∫p_θ` varie donc avec l'angle, alors que `SdotPlan1d` normalise les deux distributions à masse 1 :
 l'excédent est redistribué DANS le champ, et vient boucher les vides que les diracs/disques
 étaient précisément là pour préserver.
 
@@ -335,7 +335,7 @@ class Halo:
 
         L'écrêtage rompt légèrement la comptabilité de masse ; c'est sans conséquence ici (les
         valeurs concernées sont du bruit autour de zéro) et ça garantit une densité cible valide
-        pour `OtPlan1d`.
+        pour `SdotPlan1d`.
         """
         sino = sinogram if sinogram is not None else self.sinogram
         out = Sinogram( nb_angles = self.nb_angles, nb_bins = self.nb_bins,
@@ -352,7 +352,7 @@ def interior_values( sinogram: Sinogram, points, mass: float, radius: float | No
     """Densité `[ nb_angles, nb_bins ]` projetée par le nuage `points`, portant la masse totale
     `mass` à chaque angle.
 
-    `mass` est fournie de l'EXTÉRIEUR parce que le nuage n'en a pas : `OtPlan1d` normalise ses deux
+    `mass` est fournie de l'EXTÉRIEUR parce que le nuage n'en a pas : `SdotPlan1d` normalise ses deux
     distributions, donc la reconstruction ne fixe que la FORME. C'est `alternate` qui décide de la
     masse intérieure (voir sa docstring).
 

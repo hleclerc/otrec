@@ -2,7 +2,7 @@
 
 Le fantôme est celui de `lung_alveoli.make_lung_phantom`, agrandi sans toucher au détecteur :
 l'ombre des lobes déborde la fenêtre visible à tous les angles, la masse mesurée par angle n'est
-plus constante, et `OtPlan1d` -- qui normalise ses deux distributions -- redistribue l'excédent
+plus constante, et `SdotPlan1d` -- qui normalise ses deux distributions -- redistribue l'excédent
 DANS le champ, bouchant les alvéoles qu'on voulait justement préserver.
 
 La chaîne, dans l'ordre (voir `mesh.py` pour le raisonnement complet) :
