@@ -1,19 +1,19 @@
-"""Le tableau de bord du HALO : ce que l'ajustement a trouvé, et s'il faut le croire.
+"""The HALO dashboard: what the fit found, and whether to believe it.
 
-Six vues, dans l'ordre où on les lit :
+Six views, in the order they are read:
 
-1. le MAILLAGE avec sa densité par cellule, le nuage intérieur par-dessus -- la solution
-   elle-même, telle qu'elle vit dans l'espace ;
-2. la MASSE PAR ANGLE avant/après correction : `∫p_θ` doit passer d'une courbe variable à une
-   droite. C'est le diagnostic le plus direct de la fuite (voir `halo.mass_profile`) ;
-3. la masse VISIBLE du halo face à sa cible `∫p_θ − M_in` : l'ancrage dur de l'ajustement, donc
-   le premier endroit où regarder si le résultat déçoit ;
-4-6. le sinogramme MESURÉ, l'EMPREINTE trouvée, et le RÉSIDU final (mesuré − intérieur − halo).
+1. the MESH with its density per cell, the interior cloud on top -- the solution
+   itself, as it lives in space;
+2. the MASS PER ANGLE before/after correction: `∫p_θ` should go from a varying curve to a
+   straight line. This is the most direct diagnostic of the leakage (see `halo.mass_profile`);
+3. the VISIBLE mass of the halo against its target `∫p_θ − M_in`: the hard anchor of the fit, hence
+   the first place to look if the result disappoints;
+4-6. the MEASURED sinogram, the FOOTPRINT found, and the final RESIDUAL (measured − interior − halo).
 
-C'est le résidu (6) qui dit si le maillage suffit : du bruit sans structure = le halo a fait son
-travail ; des bandes cohérentes = il manque des degrés de liberté là où elles apparaissent.
+It is the residual (6) that tells whether the mesh is sufficient: noise without structure = the halo did its
+job; coherent bands = degrees of freedom are missing where they appear.
 
-Palette : voir `viz.style`.
+Palette: see `viz.style`.
 """
 import matplotlib.pyplot as plt
 import numpy as np
@@ -25,12 +25,12 @@ from .style import SEQ as _SEQ, VERMILLION as _VERMILLION
 
 
 def plot_halo_mesh( halo, ax = None, points = None, max_points = 20_000, show_grid = True ):
-    """Le maillage log-polaire colorié par la densité ajustée, et le nuage intérieur par-dessus.
+    """The log-polar mesh colored by the fitted density, with the interior cloud on top.
 
-    Chaque cellule est un secteur d'anneau (`matplotlib.patches.Wedge`) ; c'est la densité qui est
-    coloriée, pas la masse -- deux cellules de même couleur représentent donc des masses très
-    différentes, les aires croissant fortement avec le rayon. Le cercle en tirets est le bord du
-    champ de vue : rien du halo n'entre dedans, rien du nuage ne devrait en sortir.
+    Each cell is an annular sector (`matplotlib.patches.Wedge`); it is the density that is
+    colored, not the mass -- two cells of the same color therefore represent very different
+    masses, since areas grow strongly with radius. The dashed circle is the edge of the
+    field of view: nothing of the halo enters it, nothing of the cloud should leave it.
     """
     ax = ax or plt.gca()
     w = np.asarray( halo.weights, dtype = float )
@@ -54,8 +54,8 @@ def plot_halo_mesh( halo, ax = None, points = None, max_points = 20_000, show_gr
                           linewidth = 1.0, edgecolor = _VERMILLION ) )
     r = halo.outer_radius * 1.03
     ax.set_xlim( -r, r ); ax.set_ylim( -r, r ); ax.set_aspect( "equal" )
-    ax.set_title( f"halo : densité sur { halo.nb_cells } cellules\n"
-                  f"(masse { halo.mass():.3g}, champ de vue en tirets)", fontsize = 9 )
+    ax.set_title( f"halo: density on { halo.nb_cells } cells\n"
+                  f"(mass { halo.mass():.3g}, field of view dashed)", fontsize = 9 )
     return coll
 
 
@@ -65,48 +65,48 @@ def _sinogram_image( ax, values, halo, title, cmap = _SEQ, symmetric = False ):
     im = ax.imshow( v, aspect = "auto", origin = "lower", cmap = cmap, **kw,
                     extent = [ halo.s_min, halo.s_min + halo.nb_bins * halo.dw, 0, 180 ] )
     ax.set_title( title, fontsize = 9 )
-    ax.set_xlabel( "s (détecteur)", fontsize = 8 ); ax.set_ylabel( "θ (deg)", fontsize = 8 )
+    ax.set_xlabel( "s (detector)", fontsize = 8 ); ax.set_ylabel( "θ (deg)", fontsize = 8 )
     return im
 
 
 def plot_interior_mass_scan( scan, ax = None, truth = None ):
-    """Le balayage de `halo.scan_interior_mass` : masse récupérée par le halo, et dispersion de
-    `∫q_θ` après correction, en fonction de `M_in`.
+    """The sweep of `halo.scan_interior_mass`: mass recovered by the halo, and spread of
+    `∫q_θ` after correction, as a function of `M_in`.
 
-    Une seule grandeur en ordonnée (une masse) : la dispersion, sans commune mesure, n'apparaît
-    que par la verticale de son minimum -- un second axe des ordonnées inviterait à comparer deux
-    échelles arbitraires.
+    A single quantity on the y axis (a mass): the spread, being incommensurable, only appears
+    through the vertical line at its minimum -- a second y axis would invite comparing two
+    arbitrary scales.
     """
     ax = ax or plt.gca()
     m = scan[ "masses" ]
-    ax.plot( m, scan[ "halo_mass" ], color = _GREEN, linewidth = 1.6, label = "masse du halo" )
-    ax.set_xlabel( "M_in (masse attribuée à l'intérieur)", fontsize = 8 )
-    ax.set_ylabel( "masse du halo", fontsize = 8 )
+    ax.plot( m, scan[ "halo_mass" ], color = _GREEN, linewidth = 1.6, label = "halo mass" )
+    ax.set_xlabel( "M_in (mass attributed to the interior)", fontsize = 8 )
+    ax.set_ylabel( "halo mass", fontsize = 8 )
     ax.grid( alpha = 0.25, linewidth = 0.5 )
 
     best = m[ int( np.argmin( scan[ "dispersion" ] ) ) ]
     ax.axvline( best, color = _BLUE, linestyle = ":", linewidth = 1.2,
-                label = f"dispersion ∫q minimale ({ best:.3g})" )
+                label = f"minimal ∫q spread ({ best:.3g})" )
     if truth is not None:
-        ax.axvline( truth, color = _GREY, linestyle = "--", linewidth = 1.0, label = f"vrai M_in ({ truth:.3g})" )
+        ax.axvline( truth, color = _GREY, linestyle = "--", linewidth = 1.0, label = f"true M_in ({ truth:.3g})" )
     ax.legend( fontsize = 8, frameon = False )
-    ax.set_title( "balayage de la masse intérieure", fontsize = 9 )
+    ax.set_title( "interior mass sweep", fontsize = 9 )
     return ax
 
 
 def plot_halo( halo, points = None, interior_mass = None, radius = None, sinogram = None,
                out = None, title = None, max_points = 20_000 ):
-    """Le tableau de bord complet (voir la docstring du module). Renvoie la figure.
+    """The complete dashboard (see the module docstring). Returns the figure.
 
-    `points` : le nuage intérieur -- typiquement `rec.positions`. Sans lui, les panneaux qui en
-    dépendent (le nuage superposé, le résidu final) sont simplement omis.
-    `interior_mass` / `radius` : ce qui a été passé à `halo.alternate`, pour que le résidu affiché
-    soit CELUI que l'ajustement a vu. `interior_mass` vaut par défaut `min_θ ∫p_θ`, comme là-bas.
-    `out` : chemin d'écriture du PNG (optionnel).
+    `points`: the interior cloud -- typically `rec.positions`. Without it, the panels that
+    depend on it (the superimposed cloud, the final residual) are simply omitted.
+    `interior_mass` / `radius`: what was passed to `halo.alternate`, so that the displayed residual
+    is THE ONE the fit saw. `interior_mass` defaults to `min_θ ∫p_θ`, as there.
+    `out`: path to write the PNG (optional).
     """
-    # import tardif : `halo` tire `Reconstruction`, qui tire `viz.points_html` -- l'importer en
-    # tête d'un module de `viz` marcherait aujourd'hui, mais boucle dès que `viz/__init__` expose
-    # quoi que ce soit. Ce module n'a besoin de `halo` que pour tracer.
+    # late import: `halo` pulls in `Reconstruction`, which pulls in `viz.points_html` -- importing it at
+    # the top of a `viz` module would work today, but loops as soon as `viz/__init__` exposes
+    # anything. This module only needs `halo` for plotting.
     from ..halo import interior_values, mass_profile
 
     sino = sinogram if sinogram is not None else halo.sinogram
@@ -123,37 +123,37 @@ def plot_halo( halo, points = None, interior_mass = None, radius = None, sinogra
 
     ax = axes[ 0 ][ 1 ]
     corrected = np.clip( raw - footprint, 0.0, None ).sum( axis = 1 ) * halo.dw
-    ax.plot( deg, per_angle, color = _VERMILLION, linewidth = 1.6, label = "mesuré ∫p" )
-    ax.plot( deg, corrected, color = _BLUE, linewidth = 1.6, label = "corrigé ∫q" )
-    ax.axhline( m_in, color = _GREY, linewidth = 1.0, linestyle = "--", label = "M_in visé" )
+    ax.plot( deg, per_angle, color = _VERMILLION, linewidth = 1.6, label = "measured ∫p" )
+    ax.plot( deg, corrected, color = _BLUE, linewidth = 1.6, label = "corrected ∫q" )
+    ax.axhline( m_in, color = _GREY, linewidth = 1.0, linestyle = "--", label = "target M_in" )
     cv0, cv1 = per_angle.std() / per_angle.mean(), corrected.std() / max( corrected.mean(), 1e-30 )
-    ax.set_title( f"masse par angle -- dispersion { cv0:.1%} → { cv1:.1%}", fontsize = 9 )
+    ax.set_title( f"mass per angle -- spread { cv0:.1%} → { cv1:.1%}", fontsize = 9 )
     ax.set_xlabel( "θ (deg)", fontsize = 8 ); ax.legend( fontsize = 8, frameon = False )
     ax.grid( alpha = 0.25, linewidth = 0.5 )
 
     ax = axes[ 0 ][ 2 ]
     ax.plot( deg, np.maximum( per_angle - m_in, 0.0 ), color = _GREY, linewidth = 1.6,
-             label = "cible ∫p − M_in" )
-    ax.plot( deg, halo.visible_mass(), color = _GREEN, linewidth = 1.6, label = "halo visible" )
-    ax.set_title( "masse du halo tombant dans le détecteur", fontsize = 9 )
+             label = "target ∫p − M_in" )
+    ax.plot( deg, halo.visible_mass(), color = _GREEN, linewidth = 1.6, label = "visible halo" )
+    ax.set_title( "halo mass falling in the detector", fontsize = 9 )
     ax.set_xlabel( "θ (deg)", fontsize = 8 ); ax.legend( fontsize = 8, frameon = False )
     ax.grid( alpha = 0.25, linewidth = 0.5 )
 
-    fig.colorbar( _sinogram_image( axes[ 1 ][ 0 ], raw, halo, "sinogramme mesuré" ),
+    fig.colorbar( _sinogram_image( axes[ 1 ][ 0 ], raw, halo, "measured sinogram" ),
                   ax = axes[ 1 ][ 0 ], fraction = 0.046 )
-    fig.colorbar( _sinogram_image( axes[ 1 ][ 1 ], footprint, halo, "empreinte du halo" ),
+    fig.colorbar( _sinogram_image( axes[ 1 ][ 1 ], footprint, halo, "halo footprint" ),
                   ax = axes[ 1 ][ 1 ], fraction = 0.046 )
 
     ax = axes[ 1 ][ 2 ]
     if points is None:
         ax.set_axis_off()
-        ax.text( 0.5, 0.5, "résidu : fournir `points`", ha = "center", va = "center", fontsize = 9 )
+        ax.text( 0.5, 0.5, "residual: provide `points`", ha = "center", va = "center", fontsize = 9 )
     else:
         inside = interior_values( sino, points, m_in, radius = radius, max_points = max_points )
         res = raw - inside - footprint
         rel = np.abs( res ).max() / max( raw.max(), 1e-30 )
-        fig.colorbar( _sinogram_image( ax, res, halo, f"résidu mesuré − intérieur − halo "
-                                       f"(max { rel:.1%} du signal)", cmap = _DIV, symmetric = True ),
+        fig.colorbar( _sinogram_image( ax, res, halo, f"residual measured − interior − halo "
+                                       f"(max { rel:.1%} of the signal)", cmap = _DIV, symmetric = True ),
                       ax = ax, fraction = 0.046 )
 
     if title:
@@ -161,5 +161,5 @@ def plot_halo( halo, points = None, interior_mass = None, radius = None, sinogra
     fig.tight_layout()
     if out:
         fig.savefig( out, dpi = 130 )
-        print( f"figure sauvée: { out }" )
+        print( f"figure saved: { out }" )
     return fig

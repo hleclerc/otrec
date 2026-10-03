@@ -47,7 +47,7 @@ def load_runs(results_dir) -> dict:
 
 def _warn_config_mismatches(runs: dict):
     """Runs compare fairly only if they solved the same problem — flag it if not."""
-    keys = ("nb_diracs", "nb_angles", "nb_alveoli", "backend", "seed")
+    keys = ("nb_diracs", "nb_angles", "nb_alveoli", "seed")
     configs = {name: {k: r["meta"].get(k) for k in keys} for name, r in runs.items()}
     ref_name, ref = next(iter(configs.items()))
     for name, cfg in configs.items():

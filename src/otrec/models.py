@@ -1,28 +1,28 @@
-"""Les MODÈLES de reconstruction : ce qu'un nuage de points REPRÉSENTE, et ce qu'il en coûte.
+"""The reconstruction MODELS: what a point cloud REPRESENTS, and what it costs.
 
-Un `Model` répond à une seule question -- « quel est le coût de ce nuage de points, face au
-sinogramme mesuré ? » -- par un scalaire différentiable par rapport aux points. C'est cette
-fonction que `Reconstruction` (`Reconstruction.py`) fait décroître ; le modèle est le SEUL
-endroit qui sait de quelle façon les points sont comparés à la donnée.
+A `Model` answers a single question -- "what is the cost of this point cloud, against the
+measured sinogram?" -- with a scalar differentiable with respect to the points. This is the
+function that `Reconstruction` (`Reconstruction.py`) decreases; the model is the ONLY
+place that knows how the points are compared to the data.
 
-Les deux modèles disponibles s'appuient tous deux sur le transport optimal 1D semi-discret
-(`SdotPlan1d`, batché sur les angles), mais ils en ÉCHANGENT les rôles :
+The two available models both rely on semi-discrete 1D optimal transport
+(`SdotPlan1d`, batched over the angles), but they SWAP its roles:
 
-- `DiracModel` : les points sont l'INCONNUE vue comme des diracs de masse égale, projetés à la
-  volée sur chaque détecteur ; la CIBLE est le profil mesuré, fonction constante par morceaux.
-  Robuste et bon marché, mais la perte n'est pas différentiable partout (déplacement de diracs).
-- `DiskModel` : les points sont les CENTRES de disques 2D de rayon FIXE ; c'est le sinogramme
-  MESURÉ qui devient une somme de diracs pondérés (un par case détecteur, au centre de la case,
-  de poids la valeur du pixel), et le MODÈLE est l'image constante par morceaux de la projection
-  des disques (`disks.DiskProjector`). La perte y est lisse en les inconnues.
+- `DiracModel`: the points are the UNKNOWN seen as diracs of equal mass, projected on the
+  fly onto each detector; the TARGET is the measured profile, a piecewise-constant function.
+  Robust and cheap, but the loss is not differentiable everywhere (moving diracs).
+- `DiskModel`: the points are the CENTERS of 2D disks of FIXED radius; it is the MEASURED
+  sinogram that becomes a sum of weighted diracs (one per detector bin, at the center of the bin,
+  with weight the pixel value), and the MODEL is the piecewise-constant image of the projection
+  of the disks (`disks.DiskProjector`). The loss there is smooth in the unknowns.
 
-Ils exposent la même interface (`name`, `point_axis`, `cost`, `radii`, `floor`), si bien que
-`Reconstruction` les enchaîne sans jamais tester leur type : un même nuage peut être convergé en
-diracs puis raffiné en centres de disques.
+They expose the same interface (`name`, `point_axis`, `cost`, `radii`, `floor`), so that
+`Reconstruction` chains them without ever testing their type: the same cloud can be converged as
+diracs then refined as disk centers.
 
-En 3D ( des `Radiographs`, une image 2D par angle ), `ProjectedDiracModel` joue le rôle de
-`DiracModel` avec un transport semi-discret 2D par angle ( `SdotPlanNd` ) -- et ne propose que
-l'évaluation FUSIONNÉE coût + gradient ( voir sa docstring ).
+In 3D ( `Radiographs`, one 2D image per angle ), `ProjectedDiracModel` plays the role of
+`DiracModel` with a per-angle 2D semi-discrete transport ( `SdotPlanNd` ) -- and only offers
+the FUSED cost + gradient evaluation ( see its docstring ).
 """
 import warnings
 from abc import ABC, abstractmethod
@@ -35,25 +35,25 @@ from sdot import Iterative, OtProblem, ProjectedSumOfDiracs, SdotPlan1d, SumOfDi
 
 from .Radiographs import Radiographs
 from .Sinogram import Sinogram
-from .dirac_sycl import diracs_cost, diracs_cost_grad
+from .dirac_fused import diracs_cost, diracs_cost_grad
 from .disks import DiskProjector
 
 
 class Model( ABC ):
-    """Interface commune des modèles. Un modèle est IMMUABLE et ne porte pas de points : il est
-    construit une fois pour un sinogramme (+ ses paramètres) et évalué sur des nuages successifs.
+    """Common interface of the models. A model is IMMUTABLE and carries no points: it is
+    built once for a sinogram (+ its parameters) and evaluated on successive clouds.
     """
 
-    #: nom lisible, pour les traces et l'historique de `Reconstruction`
+    #: readable name, for the traces and the `Reconstruction` history
     name = "model"
 
-    #: nom de l'axe « point » des tenseurs de positions -- purement documentaire (il apparaît dans
-    #: les shapes et les messages d'erreur), mais chaque modèle nomme ses points comme il les voit.
+    #: name of the "point" axis of the position tensors -- purely documentary (it appears in
+    #: shapes and error messages), but each model names its points the way it sees them.
     point_axis = "num_point"
 
-    #: rayon MONDE des points quand il fait PARTIE du modèle (`None` = points sans étendue propre).
-    #: `Reconstruction.export_html` le transmet tel quel à `export_positions_html`, qui dessine
-    #: alors les disques à leur vraie taille au lieu d'une taille d'affichage arbitraire.
+    #: WORLD radius of the points when it is PART of the model (`None` = points with no extent of their own).
+    #: `Reconstruction.export_html` passes it as is to `export_positions_html`, which then
+    #: draws the disks at their true size instead of an arbitrary display size.
     radii = None
 
     def __init__( self, sinogram: Sinogram ) -> None:
@@ -61,17 +61,17 @@ class Model( ABC ):
 
     @abstractmethod
     def cost( self, points ) -> Tensor:
-        """Coût scalaire (Tensor rang 0) du nuage `points` (`[ n, 2 ]`, Tensor ou tableau),
-        différentiable par rapport à lui."""
+        """Scalar cost (rank-0 Tensor) of the cloud `points` (`[ n, 2 ]`, Tensor or array),
+        differentiable with respect to it."""
 
     @property
     def floor( self ) -> float:
-        """Coût INCOMPRESSIBLE : la valeur que `cost` atteint au mieux, même à la vérité terrain.
-        Sert de référence pour juger une reconstruction (0 quand il n'y en a pas)."""
+        """INCOMPRESSIBLE cost: the value `cost` reaches at best, even at the ground truth.
+        Serves as a reference to judge a reconstruction (0 when there is none)."""
         return 0.0
 
     def wrap( self, raw ) -> Tensor:
-        """Le tableau backend `raw` (`[ n, 2 ]`) présenté comme le Tensor de points du modèle."""
+        """The backend array `raw` (`[ n, 2 ]`) presented as the model's Tensor of points."""
         return Tensor.wrap( raw, [ self.point_axis, "dim" ] )
 
     def __repr__( self ) -> str:
@@ -79,18 +79,18 @@ class Model( ABC ):
 
 
 class DiracModel( Model ):
-    """Les points sont des DIRACS de masse égale : la densité reconstruite est leur somme.
+    """The points are DIRACS of equal mass: the reconstructed density is their sum.
 
-    La projection `s = point.n_k` N'EST PAS matérialisée : `ProjectedSumOfDiracs` garde les points
-    2D PARTAGÉS (une seule copie pour tous les angles) et la normale PAR ANGLE, le kernel calculant
-    la position 1D à la volée -- au lieu d'un tenseur `[ nb_angles, n ]` (80 Go à 1e7 diracs x 1000
-    angles). Reste différentiable : le backward scatter-atomique le gradient de la position
-    projetée sur les points 2D partagés.
+    The projection `s = point.n_k` is NOT materialized: `ProjectedSumOfDiracs` keeps the SHARED
+    2D points (a single copy for all angles) and the normal PER ANGLE, the kernel computing
+    the 1D position on the fly -- instead of an `[ nb_angles, n ]` tensor (80 GB at 1e7 diracs x 1000
+    angles). Still differentiable: the backward atomically scatters the gradient of the projected
+    position onto the shared 2D points.
 
-    `with_barycenters` : transmis tel quel à `SdotPlan1d`. Quand le SEUL gradient demandé est celui
-    des positions (le cas ici), stocker les barycentres évite au backward de re-trier + re-balayer
-    chaque angle, au prix d'un buffer `[ nb_angles, n ]` -- à activer si ce coût mémoire est
-    acceptable (voir la docstring d'`SdotPlan1d.__init__`).
+    `with_barycenters`: passed as is to `SdotPlan1d`. When the ONLY gradient requested is that
+    of the positions (the case here), storing the barycenters spares the backward from re-sorting + re-sweeping
+    each angle, at the price of an `[ nb_angles, n ]` buffer -- to be enabled if this memory cost is
+    acceptable (see the docstring of `SdotPlan1d.__init__`).
     """
 
     name = "diracs"
@@ -105,45 +105,45 @@ class DiracModel( Model ):
         src = ProjectedSumOfDiracs( points = pts, normal = self.sinogram.normals_t,
                                     batch_axes = [ self.sinogram.num_angle ] )
         dst = self.sinogram.batched_image()
-        return SdotPlan1d( src, dst, with_barycenters = self.with_barycenters ).cost.sum()  # somme sur les angles
+        return SdotPlan1d( src, dst, with_barycenters = self.with_barycenters ).cost.sum()  # sum over the angles
 
     def value_and_grad( self, points ):
-        """`(cost, grad)` fusionnés via le kernel SYCL (`dirac_sycl.diracs_cost_grad`) -- même
-        formule que `cost` + `jax.grad`, mais calculée EN UN SEUL passage (voir sa docstring), sans
-        passer par l'autodiff Jax. `points` : `[ n, proj_dim ]`, Tensor ou tableau brut -- pas
-        besoin de `wrap` (contrairement à `cost`). `with_barycenters` n'a pas de sens ici (pas de
-        bwd Jax) : ignoré. Consommé par `optimizers.FusedLBFGS` (voir
-        `Reconstruction.diracs( backend = "sycl" )`)."""
+        """Fused `(cost, grad)` via the fused kernel (`dirac_fused.diracs_cost_grad`) -- same
+        formula as `cost` + `jax.grad`, but computed IN A SINGLE pass (see its docstring), without
+        going through Jax autodiff. `points`: `[ n, proj_dim ]`, Tensor or raw array -- no
+        need to `wrap` (unlike `cost`). `with_barycenters` makes no sense here (no Jax
+        bwd): ignored. Consumed by `optimizers.FusedLBFGS` (see
+        `Reconstruction.diracs( backend = "fused" )`)."""
         return diracs_cost_grad( points, self.sinogram )
 
     def value( self, points ) -> float:
-        """`cost` SEUL (flottant Python), MÊME kernel SYCL fusionné que `value_and_grad` mais SANS
-        le calcul de gradient (`dirac_sycl.diracs_cost`) -- pour les évaluations "coût seul" d'une
-        recherche de pas, où le gradient serait de toute façon jeté."""
+        """`cost` ALONE (Python float), SAME fused kernel as `value_and_grad` but WITHOUT
+        the gradient computation (`dirac_fused.diracs_cost`) -- for the "cost only" evaluations of a
+        line search, where the gradient would be thrown away anyway."""
         return diracs_cost( points, self.sinogram )
 
 
 class DiskModel( Model ):
-    """Les points sont les CENTRES de disques 2D de rayon FIXE.
+    """The points are the CENTERS of 2D disks of FIXED radius.
 
-    Le sinogramme mesuré est ici la source discrète (`sinogram_diracs`) et la projection des
-    disques (`disks.DiskProjector`) la cible continue. Chaque tranche (angle) normalise ses deux
-    distributions à la masse 1 : ni le nombre de disques ni le rayon n'ont besoin d'être calibrés
-    sur la masse mesurée, seule compte la FORME du profil.
+    The measured sinogram is here the discrete source (`sinogram_diracs`) and the projection of the
+    disks (`disks.DiskProjector`) the continuous target. Each slice (angle) normalizes its two
+    distributions to mass 1: neither the number of disks nor the radius need to be calibrated
+    on the measured mass, only the SHAPE of the profile matters.
 
-    `nb_pixels` : finesse de la grille du modèle, sur la même étendue que le détecteur (par défaut
-    celle du détecteur). La raffiner représente mieux la projection d'un petit rayon sans toucher
-    aux données mesurées -- c'est un choix LIBRE, indépendant de `nb_bins`.
+    `nb_pixels`: fineness of the model grid, over the same extent as the detector (by default
+    that of the detector). Refining it better represents the projection of a small radius without touching
+    the measured data -- it is a FREE choice, independent of `nb_bins`.
 
-    `max_chunk_elems` : la taille des tranches de disques traitées une par une, donc le PIC MÉMOIRE
-    du gradient -- borné à une tranche quel que soit le nombre de disques (voir
-    `DiskProjector.values`). Mesuré sur le cas du poumon (600 angles x 2000 pixels), le temps ne
-    varie que de ~20% entre 3 et 223 disques par tranche : le calcul est limité par la bande
-    passante mémoire, pas par le nombre de tranches -- inutile donc de monter cette borne pour
-    aller plus vite, elle ne sert qu'à choisir la mémoire qu'on accepte de consommer.
+    `max_chunk_elems`: the size of the disk slices processed one by one, hence the MEMORY PEAK
+    of the gradient -- bounded to one slice whatever the number of disks (see
+    `DiskProjector.values`). Measured on the lung case (600 angles x 2000 pixels), the time only
+    varies by ~20% between 3 and 223 disks per slice: the computation is limited by memory
+    bandwidth, not by the number of slices -- so no point raising this bound to
+    go faster, it only serves to choose the memory one is willing to consume.
     """
 
-    name = "disques"
+    name = "disks"
     point_axis = "num_disk"
 
     def __init__( self, sinogram: Sinogram, radius: float, nb_pixels: int | None = None,
@@ -151,88 +151,88 @@ class DiskModel( Model ):
         super().__init__( sinogram )
         self.projector = DiskProjector( sinogram, radius = radius, nb_pixels = nb_pixels,
                                         max_chunk_elems = max_chunk_elems )
-        self.radii = self.projector.radius       # rayon commun, exporté tel quel à la visualisation
+        self.radii = self.projector.radius       # common radius, exported as is to the visualization
 
     def cost( self, points ) -> Tensor:
         src = sinogram_diracs( self.sinogram )
         dst = self.projector.image( points )
-        return SdotPlan1d( src, dst ).cost.sum()                        # somme sur les angles
+        return SdotPlan1d( src, dst ).cost.sum()                        # sum over the angles
 
     @property
     def floor( self ) -> float:
-        """Plancher de QUANTIFICATION : même à centres exacts la perte ne vaut pas 0, car les
-        diracs condensent chaque case détecteur en son centre -- ce qui coûte la variance d'une
-        case uniforme, `dw^2 / 12`, par angle."""
+        """QUANTIZATION floor: even at exact centers the loss is not 0, because the
+        diracs condense each detector bin into its center -- which costs the variance of a
+        uniform bin, `dw^2 / 12`, per angle."""
         return float( self.sinogram.nb_angles.value ) * self.sinogram.dw ** 2 / 12
 
 
 class ProjectedDiracModel( Model ):
-    """Les points sont des DIRACS 3D de masse égale, confrontés à des RADIOGRAPHIES
-    ( `Radiographs` ) : à chaque angle, leurs projections sur le détecteur sont transportées vers
-    l'image mesurée par un transport semi-discret 2D ( `SdotPlanNd`, un diagramme de puissance par
-    angle ), et le coût est la somme sur les angles des `W_2^2`.
+    """The points are 3D DIRACS of equal mass, confronted with RADIOGRAPHS
+    ( `Radiographs` ): at each angle, their projections onto the detector are transported to
+    the measured image by a 2D semi-discrete transport ( `SdotPlanNd`, one power diagram per
+    angle ), and the cost is the sum over the angles of the `W_2^2`.
 
-    Le pendant 3D de `DiracModel`, avec une différence de nature : le transport 1D est EXACT ( un
-    tri ), le transport 2D est un AJUSTEMENT de poids ( `SdotPlanNd._fit`, itératif ). D'où :
+    The 3D counterpart of `DiracModel`, with a difference in nature: the 1D transport is EXACT ( a
+    sort ), the 2D transport is a weight FIT ( `SdotPlanNd._fit`, iterative ). Hence:
 
-    - le gradient par rapport aux points ne passe pas par l'autodiff mais par le théorème de
-      l'ENVELOPPE, aux poids ajustés : `2 m_i ( p_i - b_i )` sur le détecteur ( `b_i` le barycentre
-      de la cellule de Laguerre, voir `SdotPlanNd.cost_and_position_grad` ), puis remonté en 3D par la
-      transposée de la projection ( `Radiographs.unproject_grad` ). Le modèle n'a donc qu'un
-      `value_and_grad` fusionné ( `FusedLBFGS` ) -- `cost` rend un flottant, pas un `Tensor` ;
-    - chaque angle est résolu par le Newton amorti de `SdotPlanNd` ( tout en C++ ), et les
-      poids ajustés sont GARDÉS d'une évaluation à l'autre ( `weights0` du prochain `SdotPlanNd` ) :
-      des points qui bougent peu demandent des poids qui bougent peu, quelques pas suffisent. C'est
-      un cache, pas un état -- le résultat n'en dépend pas, et il n'a plus à être écarté quand il
-      vide une cellule : le C++ choisit lui-même le meilleur des trois départs qu'il connaît ( les
-      poids donnés, le Voronoï, la similitude qui ramène le nuage dans le détecteur ) et dit lequel
-      dans `stats[ "depart" ]` ;
-    - une projection est 2D, donc le pas de Newton y est celui par les LIMITES ( `step = "auto"`
-      -> `"limits"` ) : le coefficient de relaxation maximal des cellules qui s'écrasent le long de
-      la direction, calculé EXACTEMENT au lieu d'être cherché par essais successifs -- d'où des
-      reculs devenus rares ( 1.8 par ajustement sur le cas mesuré ci-dessous, contre 515 quand le
-      problème est mal posé ) ;
-    - la radiographie reçoit un FOND ( `background`, en fraction de sa valeur moyenne ), et il
-      reste INDISPENSABLE : une boule projetée est nulle hors de son ombre, et une cellule qui ne
-      voit que des zéros n'a AUCUN poids qui lui donne sa masse -- le problème n'a pas de solution,
-      pas seulement un mauvais départ. La CONTINUATION EN LARGEUR d'`SdotPlanNd`
-      ( `continuation = "auto"` : la densité convolée large d'abord, resserrée étape par étape,
-      chacune repartant des poids de la précédente ) adoucit le CHEMIN, pas la cible : sa dernière
-      étape est la densité elle-même, zéros compris. Mesuré ( 200 diracs, 6 angles, 64 x 64,
-      départ dans le cube, `notes/2026-09-23-otrec-3d.md` ) : sans fond, 36 ajustements sur 48 ne convergent
-      pas, 515 reculs par appel, et la perte MONTE ( 2.6 -> 8.0 ) ; avec un fond de 1e-6, tous
-      convergent, 22 diagrammes par appel, 98 % des diracs finissent dans les boules ;
-    - ce que la continuation change, en revanche, c'est qu'un fond FAIBLE devient utilisable.
-      Même cas, `continuation = "never"` contre `"auto"`, à fond 1e-6 : 25 ajustements sur 78 ne
-      convergent pas, 950 diagrammes par appel, 46 % des diracs dans les boules -- contre aucun
-      raté, 22 diagrammes et 98 %. À fond 1e-3 elle ne coûte rien et économise un tiers des
-      diagrammes en supprimant les reculs ;
-    - le point de DÉPART compte toujours, pour ce qu'il coûte : des diracs tirés dans tout le cube
-      font refaire des étapes de continuation à chaque angle et à chaque évaluation, là où
-      `Reconstruction.hull_points` ( l'enveloppe visuelle ) part d'emblée près de l'objet.
+    - the gradient with respect to the points does not go through autodiff but through the
+      ENVELOPE theorem, at the fitted weights: `2 m_i ( p_i - b_i )` on the detector ( `b_i` the barycenter
+      of the Laguerre cell, see `SdotPlanNd.cost_and_position_grad` ), then lifted to 3D by the
+      transpose of the projection ( `Radiographs.unproject_grad` ). The model therefore only has a
+      fused `value_and_grad` ( `FusedLBFGS` ) -- `cost` returns a float, not a `Tensor`;
+    - each angle is solved by the damped Newton of `SdotPlanNd` ( all in C++ ), and the fitted
+      weights are KEPT from one evaluation to the next ( `weights0` of the next `SdotPlanNd` ):
+      points that move little require weights that move little, a few steps suffice. It is
+      a cache, not a state -- the result does not depend on it, and it no longer has to be discarded when it
+      empties a cell: the C++ itself picks the best of the three starts it knows ( the given
+      weights, the Voronoi, the similarity that brings the cloud back into the detector ) and says which
+      in `stats[ "start" ]`;
+    - a projection is 2D, so the Newton step there is the one from the LIMITS ( `step = "auto"`
+      -> `"limits"` ): the maximal relaxation coefficient of the cells that get squashed along
+      the direction, computed EXACTLY instead of being searched by successive trials -- hence
+      backtracks that have become rare ( 1.8 per fit on the case measured below, versus 515 when the
+      problem is ill-posed );
+    - the radiograph receives a BACKGROUND ( `background`, as a fraction of its mean value ), and it
+      remains INDISPENSABLE: a projected ball is zero outside its shadow, and a cell that only
+      sees zeros has NO weight that gives it its mass -- the problem has no solution,
+      not just a bad starting point. The WIDTH CONTINUATION of `SdotPlanNd`
+      ( `continuation = "auto"`: the wide convolved density first, tightened step by step,
+      each restarting from the weights of the previous one ) softens the PATH, not the target: its last
+      step is the density itself, zeros included. Measured ( 200 diracs, 6 angles, 64 x 64,
+      start in the cube, `notes/2026-09-23-otrec-3d.md` ): without background, 36 fits out of 48 do not
+      converge, 515 backtracks per call, and the loss GOES UP ( 2.6 -> 8.0 ); with a background of 1e-6, all
+      converge, 22 diagrams per call, 98 % of the diracs end up in the balls;
+    - what the continuation does change, however, is that a LOW background becomes usable.
+      Same case, `continuation = "never"` versus `"auto"`, at background 1e-6: 25 fits out of 78 do not
+      converge, 950 diagrams per call, 46 % of the diracs in the balls -- versus no
+      failure, 22 diagrams and 98 %. At background 1e-3 it costs nothing and saves a third of the
+      diagrams by eliminating the backtracks;
+    - the STARTING point still matters, for what it costs: diracs drawn in the whole cube
+      cause continuation steps to be redone at each angle and each evaluation, whereas
+      `Reconstruction.hull_points` ( the visual hull ) starts right away near the object.
     """
 
     name = "diracs 3D"
     point_axis = "num_dirac"
-    #: pas de `cost` traçable : seul `value_and_grad` existe ( voir la docstring )
+    #: no traceable `cost`: only `value_and_grad` exists ( see the docstring )
     fused_only = True
 
     def __init__( self, radiographs: Radiographs, background: float = 1e-3, max_iter: int = 100,
                   mass_tol: float = 1e-4, kernel_dtype = None, continuation: str = "auto",
                   strict: bool = False ) -> None:
-        """`background`, `max_iter`, `mass_tol`, `continuation` : voir la docstring de la classe et
-        `SdotPlanNd`. Le Newton est celui de KMT, amorti ( le Newton NON amorti a été mesuré 5 à 50 fois
-        plus lent, floutage ou pas -- voir `notes/2026-09-14-reconstruction-3d.md` -- et n'existe
-        plus ), le pas venant des LIMITES puisqu'une projection est 2D.
+        """`background`, `max_iter`, `mass_tol`, `continuation`: see the class docstring and
+        `SdotPlanNd`. The Newton is the KMT one, damped ( the UNdamped Newton was measured 5 to 50 times
+        slower, blurred or not -- see `notes/2026-09-14-reconstruction-3d.md` -- and no longer
+        exists ), the step coming from the LIMITS since a projection is 2D.
 
-        `mass_tol` est RELATIF à la masse d'un dirac ( `1 / n` ) -- et borné par ce que le noyau
-        sait : en FP32, l'aire d'une cellule n'est connue qu'à ~1e-5 près en relatif, en dessous le
-        Newton ne trouve plus de pas qui baisse le résidu. D'où `kernel_dtype = None` par défaut,
-        qui laisse `SdotPlanNd` couper en FP64 -- FP32 est à réserver aux essais.
+        `mass_tol` is RELATIVE to the mass of a dirac ( `1 / n` ) -- and bounded by what the kernel
+        knows: in FP32, the area of a cell is only known to ~1e-5 relative, below that the
+        Newton no longer finds a step that lowers the residual. Hence `kernel_dtype = None` by default,
+        which lets `SdotPlanNd` choose FP64 -- FP32 is to be reserved for trials.
 
-        `strict` : lever dès qu'un angle ne converge pas, au lieu de le compter dans
-        `solver_stats` et de rendre quand même le coût ( un ajustement inachevé donne un gradient
-        faux par le théorème de l'enveloppe, qui suppose les poids optimaux )."""
+        `strict`: raise as soon as an angle does not converge, instead of counting it in
+        `solver_stats` and returning the cost anyway ( an unfinished fit gives a wrong
+        gradient by the envelope theorem, which assumes optimal weights )."""
         super().__init__( radiographs )
         self.radiographs = radiographs
         self.background = float( background )
@@ -243,32 +243,32 @@ class ProjectedDiracModel( Model ):
         self.strict = bool( strict )
         nb_angles = int( radiographs.nb_angles.value )
         self._images = [ radiographs.image( k, background = self.background ) for k in range( nb_angles ) ]
-        # UN PROBLEME PAR ANGLE, gardé d'une évaluation à l'autre : c'est lui qui porte les poids de
-        # la dernière solution, donc le ré-échauffement n'a plus à être recopié ici ( voir
-        # `OtProblem.solve` ). Construit paresseusement -- la source n'existe qu'à la première
-        # évaluation, et elle change de taille d'un étage de `Reconstruction.multiscale` à l'autre.
+        # ONE PROBLEM PER ANGLE, kept from one evaluation to the next: it is the one that carries the weights of
+        # the last solution, so the warm start no longer has to be copied here ( see
+        # `OtProblem.solve` ). Built lazily -- the source only exists at the first
+        # evaluation, and it changes size from one `Reconstruction.multiscale` stage to the next.
         self._problems = [ None ] * nb_angles
-        # une cible qui garde des pixels NULS ne se transporte pas ( voir la docstring de la classe :
-        # mesuré, les ajustements n'y convergent pas et la perte monte ). On le dit une fois, au lieu
-        # de laisser une descente de plusieurs heures rendre un nuage faux.
+        # a target that keeps ZERO pixels cannot be transported ( see the class docstring:
+        # measured, the fits do not converge there and the loss goes up ). We say so once, instead of
+        # letting a multi-hour descent return a wrong cloud.
         if self.background <= 0 and float( np.asarray( radiographs.values ).min() ) <= 0:
-            warnings.warn( "ProjectedDiracModel : les radiographies ont des pixels NULS et aucun fond "
-                           "n'est ajouté ( background = 0 ) -- les ajustements par angle ne convergeront "
-                           "pas ( la continuation adoucit le chemin, pas la cible ). Donner "
-                           "`background > 0` ( 1e-6 suffit ).", stacklevel = 2 )
-        #: ce que les ajustements ont coûté depuis le début, tous angles confondus ( voir
-        #: `solver_line` ) -- ce qu'on regarde pour savoir si le nuage est encore loin
-        self.solver_stats = dict( nb_calls = 0, nb_iter = 0, nb_diag = 0, nb_recul = 0, nb_etapes = 0,
-                                  nb_voronoi = 0, nb_similitude = 0, nb_not_converged = 0 )
+            warnings.warn( "ProjectedDiracModel: the radiographs have ZERO pixels and no background "
+                           "is added ( background = 0 ) -- the per-angle fits will not converge "
+                           "( the continuation softens the path, not the target ). Give "
+                           "`background > 0` ( 1e-6 is enough ).", stacklevel = 2 )
+        #: what the fits have cost since the start, all angles combined ( see
+        #: `solver_line` ) -- what we look at to know whether the cloud is still far off
+        self.solver_stats = dict( nb_calls = 0, nb_iter = 0, nb_diag = 0, nb_backtracks = 0, nb_continuation_steps = 0,
+                                  nb_voronoi = 0, nb_similarity = 0, nb_not_converged = 0 )
 
     def _plan( self, k, uv ):
-        """le transport de l'angle `k`, ajusté -- en repartant des poids de la dernière fois"""
-        # le NEWTON sur la fonctionnelle duale : un nombre de pas indépendant du nombre de diracs,
-        # et, d'une évaluation à l'autre, quelques pas seulement -- `OtProblem` garde les poids de
-        # sa dernière solution et les reprend comme départ, y compris quand le nuage a changé de
-        # TAILLE ( un étage de `Reconstruction.multiscale` : il les périme alors de lui-même ). Des
-        # poids qui vident une cellule ne sont pas écartés : le C++ compare lui-même les départs
-        # qu'il connaît et garde le meilleur ( `stats[ "depart" ]` ).
+        """the transport of angle `k`, fitted -- restarting from the weights of the last time"""
+        # the NEWTON on the dual functional: a number of steps independent of the number of diracs,
+        # and, from one evaluation to the next, only a few steps -- `OtProblem` keeps the weights of
+        # its last solution and takes them as the start, including when the cloud has changed
+        # SIZE ( a `Reconstruction.multiscale` stage: it then invalidates them by itself ). Weights that
+        # empty a cell are not discarded: the C++ itself compares the starts
+        # it knows and keeps the best ( `stats[ "start" ]` ).
         pb = self._problems[ k ]
         if pb is None:
             pb = self._problems[ k ] = OtProblem( SumOfDiracs( uv ), self._images[ k ] )
@@ -280,36 +280,36 @@ class ProjectedDiracModel( Model ):
         return plan
 
     def _account( self, k, plan ):
-        """ce que l'ajustement de l'angle `k` a coûté, cumulé dans `solver_stats`"""
+        """what the fit of angle `k` has cost, accumulated in `solver_stats`"""
         st = plan.stats
         s = self.solver_stats
         s[ "nb_calls" ] += 1
-        for name in ( "nb_iter", "nb_diag", "nb_recul", "nb_etapes" ):
+        for name in ( "nb_iter", "nb_diag", "nb_backtracks", "nb_continuation_steps" ):
             s[ name ] += st[ name ]
-        if st[ "depart" ] == "voronoi":
+        if st[ "start" ] == "voronoi":
             s[ "nb_voronoi" ] += 1
-        elif st[ "depart" ] == "similitude":
-            s[ "nb_similitude" ] += 1
+        elif st[ "start" ] == "similarity":
+            s[ "nb_similarity" ] += 1
         if not plan.converged:
             s[ "nb_not_converged" ] += 1
             if self.strict:
-                raise RuntimeError( f"ProjectedDiracModel : l'angle { k } n'a pas convergé "
-                                    f"( { st[ 'fin' ] }, reste { st[ 'reste' ]:.3e} ) -- le gradient de "
-                                    "l'enveloppe suppose les poids optimaux" )
+                raise RuntimeError( f"ProjectedDiracModel: angle { k } did not converge "
+                                    f"( { st[ 'status' ] }, remainder { st[ 'residual' ]:.3e} ) -- the envelope "
+                                    "gradient assumes optimal weights" )
 
     def solver_line( self ) -> str:
-        """Une ligne de ce que les ajustements ont coûté, MOYENNÉE par angle résolu -- de quoi voir
-        d'un coup d'oeil si le nuage est encore loin ( des étapes de continuation, des départs au
-        Voronoï ) ou déjà chaud ( deux ou trois pas de Newton, aucune étape )."""
+        """A line on what the fits have cost, AVERAGED per solved angle -- to see
+        at a glance whether the cloud is still far off ( continuation steps, Voronoi starts )
+        or already warm ( two or three Newton steps, no step )."""
         s = self.solver_stats
         nb = max( 1, s[ "nb_calls" ] )
-        return ( f"{ s[ 'nb_calls' ] } ajustements : { s[ 'nb_iter' ] / nb:.1f} pas, "
-                 f"{ s[ 'nb_diag' ] / nb:.1f} diagrammes, { s[ 'nb_etapes' ] / nb:.2f} étapes de continuation, "
-                 f"{ s[ 'nb_recul' ] / nb:.2f} reculs, départs { s[ 'nb_voronoi' ] } Voronoï / "
-                 f"{ s[ 'nb_similitude' ] } similitude, { s[ 'nb_not_converged' ] } non convergés" )
+        return ( f"{ s[ 'nb_calls' ] } fits: { s[ 'nb_iter' ] / nb:.1f} steps, "
+                 f"{ s[ 'nb_diag' ] / nb:.1f} diagrams, { s[ 'nb_continuation_steps' ] / nb:.2f} continuation steps, "
+                 f"{ s[ 'nb_backtracks' ] / nb:.2f} backtracks, starts { s[ 'nb_voronoi' ] } Voronoi / "
+                 f"{ s[ 'nb_similarity' ] } similarity, { s[ 'nb_not_converged' ] } not converged" )
 
     def value_and_grad( self, points ):
-        """`( cost, grad )`, `grad` de shape `[ n, 3 ]` -- voir la docstring de la classe."""
+        """`( cost, grad )`, `grad` of shape `[ n, 3 ]` -- see the class docstring."""
         pts = np.asarray( points, dtype = float ).reshape( -1, 3 )
         proj = self.radiographs.project_points( pts )                           # [ nb_angles, n, 2 ]
         cost, grad_uv = 0.0, np.zeros_like( proj )
@@ -325,7 +325,7 @@ class ProjectedDiracModel( Model ):
         return float( sum( self._plan( k, proj[ k ] ).cost for k in range( len( proj ) ) ) )
 
     def cost( self, points ):
-        """Le coût -- un FLOTTANT ( pas dérivable par autodiff, voir la docstring )."""
+        """The cost -- a FLOAT ( not differentiable by autodiff, see the docstring )."""
         return self.value( points )
 
     def wrap( self, raw ) -> Tensor:
@@ -333,13 +333,13 @@ class ProjectedDiracModel( Model ):
 
 
 def sinogram_diracs( sinogram: Sinogram ) -> SumOfDiracs1d:
-    """Le sinogramme MESURÉ vu comme une somme de diracs pondérés, batchée sur les angles : un
-    dirac par case détecteur, placé au CENTRE de la case et de poids la valeur du pixel.
+    """The MEASURED sinogram seen as a sum of weighted diracs, batched over the angles: one
+    dirac per detector bin, placed at the CENTER of the bin and with weight the pixel value.
 
-    Les positions (centres de cases) sont les mêmes à tous les angles : elles sont donc PARTAGÉES
-    (`[ nb_bins ]`, pas `[ nb_angles, nb_bins ]`) ; seuls les poids sont batchés. C'est ce que
-    `raw_1d_diracs` transmet ensuite au chemin pur Jax d'`Image.try_update_sdotplan1d`, qui ne
-    matérialise jamais plus d'un angle à la fois.
+    The positions (bin centers) are the same at all angles: they are therefore SHARED
+    (`[ nb_bins ]`, not `[ nb_angles, nb_bins ]`); only the weights are batched. This is what
+    `raw_1d_diracs` then passes on to the pure-Jax path of `Image.try_update_sdotplan1d`, which
+    never materializes more than one angle at a time.
     """
     return SumOfDiracs1d(
         positions = sinogram.bin_centers,

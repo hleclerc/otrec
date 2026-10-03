@@ -43,10 +43,7 @@ def _triangle_mass_angle(centers, radius, nx, ny, pix_edges):
     disk centre, `[nb_pixels]` — the alternative `shape` to `_disk_mass_angle`
     (see `HcReconstruction.use_disks`). `tent(v) = max(0, 1-|v|/r)`: height 1
     at the peak, support half-width `r` (so area `r`, translation-invariant,
-    same normalisation convention as `hc_ot_sycl.cpp`'s continuous kernel —
-    the only shape it knows how to sweep in closed form, hence `shape` being
-    selectable HERE too: it lets a jax run and a sycl run be compared on the
-    literal same target shape).
+    same normalisation convention as the former continuous closed-form kernel).
 
     Purely polynomial in the clipped local coordinate `v` — no sqrt/asin, so
     (unlike `_disk_mass_angle`) no NaN-safe surrogate derivative is needed:
@@ -73,8 +70,8 @@ def _ot1d_disks_angle(sino_row, bin_centers_src, mass_tgt, pix_edges):
     `bin_centers_src`) and the disk-projected piecewise-constant density
     (`mass_tgt` over `pix_edges`, differentiable w.r.t. the disk centers
     through `mass_tgt`) — SOURCE/TARGET roles flipped relative to
-    `_ot1d_angle` (see `models.DiskModel`'s docstring, "ils en ÉCHANGENT les
-    rôles").
+    `_ot1d_angle` (see `models.DiskModel`'s docstring, "they SWAP the
+    roles").
 
     A direct port of `sdot.distributions._pure_jax_cost1d.cost_1d_ot` — the
     closed-form pure-Jax path `SdotPlan1d` itself uses for a dirac-source vs.
@@ -99,7 +96,7 @@ def _ot1d_disks_angle(sino_row, bin_centers_src, mass_tgt, pix_edges):
     NEGATIVE cost for some matched window — impossible in exact arithmetic (every window's
     contribution is `integral (x-p)^2 dnu(x) >= 0`). Confirmed float32-specific: the exact same
     inputs under `jax.config.update("jax_enable_x64", True)` give a sane, positive cost matching
-    the (double-precision) sycl kernel. No mitigation lives HERE (would need call-site
+    a double-precision evaluation. No mitigation lives HERE (would need call-site
     `jax.config`, out of scope for a pure function) — callers running the disks/triangle model
     at fine resolution should enable jax x64.
     """

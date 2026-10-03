@@ -20,7 +20,7 @@ def test_live_canvas_registers_and_publishes():
         stream = urlopen(base_url + f"/api/simulations/{simulation.id}/contexts/points/events")
         snapshot = json.loads(stream.readline().removeprefix(b"data: "))
         assert snapshot["entries"][0]["coordinates"] == {"step": 4, "level": [2, 3]}
-        stream.readline()  # ligne vide séparant les événements SSE
+        stream.readline()  # blank line separating SSE events
         canvas.update([[0.0, 0.0]], step=5, parameters={"level": [2, 3]})
         update = json.loads(stream.readline().removeprefix(b"data: "))
         assert update["entry"] == {

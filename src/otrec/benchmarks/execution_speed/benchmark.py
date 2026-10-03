@@ -1,14 +1,14 @@
-"""Execution-speed benchmark : temps d'exécution réel d'un problème de reconstruction représentatif.
+"""Execution-speed benchmark: real execution time of a representative reconstruction problem.
 
-Pas une comparaison de qualité d'optimiseurs (voir ../optimizers/benchmark.py pour ça) -- ici on
-ne regarde que le TEMPS : coût de compilation JIT (premier appel) puis débit en régime permanent
-(steady state, une fois le kernel compilé), pour `loss` seule (forward) et pour son gradient
-(forward + backward, via `driver.grad`). Le but est de comparer le MÊME problème sur différents
-hardwares/backends (CPU local, `lmo` CUDA/CPU -- voir les cibles `bench`/`bench_lmo` de
-`.private/Makefile`) avant de chercher des optimisations spécifiques.
+Not an optimizer quality comparison (see ../optimizers/benchmark.py for that) -- here we
+only look at TIME: JIT compilation cost (first call) then steady-state throughput
+(once the kernel is compiled), for `loss` alone (forward) and for its gradient
+(forward + backward, via `driver.grad`). The goal is to compare the SAME problem on different
+hardware/backends (local CPU, `lmo` CUDA/CPU -- see the `bench`/`bench_lmo` targets of
+`.private/Makefile`) before looking for specific optimizations.
 
-Usage direct : `python -m applications.reconstruction.benchmarks.execution_speed.benchmark [options]`
-(dans l'env `vfs` -- voir `.private/Makefile`'s `bench`/`bench_lmo`).
+Direct usage: `python -m applications.reconstruction.benchmarks.execution_speed.benchmark [options]`
+(in the `vfs` env -- see `.private/Makefile`'s `bench`/`bench_lmo`).
 """
 
 import argparse
@@ -22,7 +22,7 @@ from ...models import DiracModel
 
 
 def _sync( x ):
-    """Force la complétion d'un calcul device asynchrone (jax/torch) pour un chrono fiable."""
+    """Force completion of an asynchronous device computation (jax/torch) for reliable timing."""
     block_until_ready = getattr( x, "block_until_ready", None )
     if block_until_ready is not None:
         return block_until_ready()
@@ -31,9 +31,9 @@ def _sync( x ):
 
 
 def _time_steady( func, x, nb_calls: int ):
-    """Chronomètre `func` : 1er appel (trace + compile + exécution) séparé du régime permanent.
+    """Time `func`: first call (trace + compile + execution) kept separate from steady state.
 
-    Renvoie `( t_compile, t_steady_per_call )`, en secondes.
+    Returns `( t_compile, t_steady_per_call )`, in seconds.
     """
     t0 = time.perf_counter()
     _sync( func( x ) )
@@ -56,13 +56,13 @@ def benchmark_execution_speed(
     seed: int = 0,
     verbose: bool = True,
 ):
-    """Construit un problème de reconstruction représentatif et chronomètre `loss` et son gradient.
+    """Build a representative reconstruction problem and time `loss` and its gradient.
 
-    `DiracModel.cost` est un unique `SdotPlan1d` BATCHÉ sur les angles (voir `models.py`) -- ce chrono
-    mesure donc le débit du kernel batché réel, pas une boucle Python par angle. On appelle le
-    MODÈLE directement (et non une étape de `Reconstruction`) : ici on ne veut chronométrer que le
-    coût et son gradient, sans optimiseur autour. Renvoie un dict de timings, imprimé par
-    `__main__` sous forme de rapport.
+    `DiracModel.cost` is a single `SdotPlan1d` BATCHED over the angles (see `models.py`) -- this timing
+    therefore measures the throughput of the real batched kernel, not a Python loop per angle. We call the
+    MODEL directly (rather than a `Reconstruction` step): here we only want to time the
+    cost and its gradient, with no optimizer around. Returns a dict of timings, printed by
+    `__main__` as a report.
     """
     sino = Sinogram( nb_angles = nb_angles, nb_bins = nb_bins, extent = extent )
     sino.add_disk( center = [ 0.3, -0.2 ], radius = 1.0 )
@@ -75,11 +75,11 @@ def benchmark_execution_speed(
     def scalar_loss( p ):
         return model.cost( model.wrap( p ) ).value
 
-    # `positions` est le SEUL argument tracé : ce gradient ne porte déjà que sur les positions
-    # des diracs, jamais sur le sinogramme (fixe, capturé par la closure). Avec `with_barycenters
-    # = True`, le backward d'`SdotPlan1d` lit les barycentres stockés au lieu de re-trier + re-
-    # balayer chaque angle (voir `SdotPlan1d.__init__`'s docstring / [[projected-source-fusion]]) --
-    # comparé ci-dessous au cas par défaut (`with_barycenters = False`) pour mesurer le gain.
+    # `positions` is the ONLY traced argument: this gradient is already only w.r.t. the positions
+    # of the diracs, never w.r.t. the sinogram (fixed, captured by the closure). With `with_barycenters
+    # = True`, the backward of `SdotPlan1d` reads the stored barycenters instead of re-sorting + re-
+    # sweeping each angle (see `SdotPlan1d.__init__`'s docstring / [[projected-source-fusion]]) --
+    # compared below with the default case (`with_barycenters = False`) to measure the gain.
     def scalar_loss_bary( p ):
         return model_bary.cost( model_bary.wrap( p ) ).value
 
@@ -95,7 +95,7 @@ def benchmark_execution_speed(
     t_compile_grad, t_steady_grad = _time_steady( grad_j, positions, nb_calls )
     t_compile_grad_bary, t_steady_grad_bary = _time_steady( grad_bary_j, positions, nb_calls )
 
-    # un `SdotPlan1d` (taille nb_diracs) par angle est résolu à chaque appel de loss/grad (batché).
+    # one `SdotPlan1d` (size nb_diracs) per angle is solved at each loss/grad call (batched).
     nb_ot_solves = nb_angles
 
     print( driver.ftype.cpp_name )
@@ -129,7 +129,7 @@ def _parse_args():
     p.add_argument( "--nb-bins", type = int, default = 150 )
     p.add_argument( "--nb-diracs", type = int, default = 10000 )
     p.add_argument( "--extent", type = float, default = 6.0 )
-    p.add_argument( "--nb-calls", type = int, default = 10, help = "nombre d'appels chronométrés en régime permanent" )
+    p.add_argument( "--nb-calls", type = int, default = 10, help = "number of timed steady-state calls" )
     p.add_argument( "--seed", type = int, default = 0 )
     return p.parse_args()
 

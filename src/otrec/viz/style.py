@@ -1,13 +1,13 @@
-"""La palette commune aux figures de reconstruction.
+"""The common palette for reconstruction figures.
 
-Les teintes des COURBES viennent d'Okabe-Ito, sûre en deutéranopie et protanopie -- les figures
-sont lues en niveaux de gris à l'impression aussi souvent qu'à l'écran. Les CARTES suivent la
-règle usuelle : une seule teinte claire->foncée pour une grandeur positive (densité, sinogramme),
-une divergente à milieu neutre pour une grandeur SIGNÉE (un résidu).
+The hues for CURVES come from Okabe-Ito, which is safe for deuteranopia and protanopia -- the figures
+are read in grayscale in print as often as on screen. MAPS follow the
+usual rule: a single light->dark hue for a positive quantity (density, sinogram),
+a diverging one with a neutral midpoint for a SIGNED quantity (a residual).
 """
 
-#: Okabe-Ito : bleu, vermillon, vert-bleu, plus un gris pour les repères
+#: Okabe-Ito: blue, vermilion, bluish green, plus a grey for reference marks
 BLUE, VERMILLION, GREEN, GREY = "#0072B2", "#D55E00", "#009E73", "#666666"
 
-#: séquentielle (grandeurs positives) et divergente (grandeurs signées)
+#: sequential (positive quantities) and diverging (signed quantities)
 SEQ, DIV = "magma_r", "RdBu_r"

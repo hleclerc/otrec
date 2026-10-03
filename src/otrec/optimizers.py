@@ -39,7 +39,7 @@ class GradientDescent(Optimizer):
         grad = driver.jit(driver.grad(scalar_loss))
 
         for step in range(self.nb_steps):
-            x = x - self.lr * grad(x)
+            x = x - self.lr * np.asarray(grad(x))
             if callback is not None:
                 callback(step, x)
 
@@ -48,16 +48,16 @@ class GradientDescent(Optimizer):
 
 def _two_phase_lbfgsb(fun, jac, x0_flat, shape_orig, *, max_iter: int, ftol: float,
                        min_iter: int, disp_tol: float | None, callback):
-    """Coeur commun à `LBFGS` et `FusedLBFGS` : L-BFGS-B scipy en deux appels -- un premier à
-    `maxiter=min_iter` avec `ftol=gtol=0` (voir `LBFGS.min_iter` : cela REND RARE un arrêt
-    anticipé, cela ne l'interdit pas),
-    puis un second qui reprend `ftol` pour les pas restants, avec arrêt anticipé sur `disp_tol`
-    (déplacement max d'un point) via `StopIteration` depuis le callback.
+    """Common core of `LBFGS` and `FusedLBFGS`: scipy L-BFGS-B in two calls -- a first one with
+    `maxiter=min_iter` and `ftol=gtol=0` (see `LBFGS.min_iter`: this makes an early stop RARE,
+    it does not forbid it),
+    then a second one that takes `ftol` back for the remaining steps, with early stop on `disp_tol`
+    (max displacement of a point) via `StopIteration` from the callback.
 
-    `fun`/`jac` sont transmis TELS QUELS à `scipy.optimize.minimize` -- `jac` un callable
-    (gradient séparé, `LBFGS`) ou `True` (`fun` renvoie `(valeur, gradient)`, `FusedLBFGS`) :
-    seule cette paire diffère entre les deux optimiseurs, le reste (double appel, callbacks,
-    critères d'arrêt) est repris ici pour ne pas diverger entre les deux implémentations.
+    `fun`/`jac` are passed AS IS to `scipy.optimize.minimize` -- `jac` a callable
+    (separate gradient, `LBFGS`) or `True` (`fun` returns `(value, gradient)`, `FusedLBFGS`):
+    only this pair differs between the two optimizers, the rest (double call, callbacks,
+    stopping criteria) is shared here so as not to diverge between the two implementations.
     """
     step_counter = [0]  # mutable counter for callback, shared across the two minimize() calls
     prev_x = [x0_flat.copy()]
@@ -101,26 +101,26 @@ def _two_phase_lbfgsb(fun, jac, x0_flat, shape_orig, *, max_iter: int, ftol: flo
 class LBFGS(Optimizer):
     """L-BFGS optimization via scipy.
 
-    `min_iter` : nombre de pas IMPOSÉ avant que scipy ait le droit de conclure à convergence.
-    Sans ça, L-BFGS-B peut s'arrêter dès le pas 0/1 dès que `ftol`/`gtol` (défaut scipy) sont
-    satisfaits -- observé sur le modèle DISQUES, où la perte est quasi stationnaire le long de
-    directions pourtant loin d'être optimales (un disque peut glisser sans changer le résidu
-    tant qu'il ne chevauche personne). Mis en oeuvre en DEUX appels `scipy.optimize.minimize`
-    (voir `_two_phase_lbfgsb`) : un premier à `maxiter=min_iter` avec `ftol=gtol=0`, puis un
-    second qui reprend le `ftol` demandé pour les pas restants.
+    `min_iter`: number of steps IMPOSED before scipy is allowed to conclude convergence.
+    Without it, L-BFGS-B may stop as early as step 0/1 as soon as `ftol`/`gtol` (scipy defaults) are
+    satisfied -- observed on the DISKS model, where the loss is nearly stationary along
+    directions that are nonetheless far from optimal (a disk can slide without changing the residual
+    as long as it overlaps nobody). Implemented as TWO `scipy.optimize.minimize` calls
+    (see `_two_phase_lbfgsb`): a first one with `maxiter=min_iter` and `ftol=gtol=0`, then a
+    second one that takes the requested `ftol` back for the remaining steps.
 
-    ATTENTION -- `min_iter` est un « au mieux », pas une garantie : `ftol=0` n'interdit pas un
-    arrêt anticipé, il le conditionne à une réduction EXACTEMENT nulle (le test `factr` de
-    L-BFGS-B), ce qu'une direction parfaitement plate atteint. Observé sur DISQUES : 9 pas pour
-    `min_iter=10`, scipy renvoyant `CONVERGENCE: RELATIVE REDUCTION OF F <= FACTR*EPSMCH`, et un
-    appel relancé depuis ce point ne fait plus aucun pas (point réellement stationnaire pour la
-    recherche linéaire). Ne pas asserter `nb_steps >= min_iter` : rien ne peut le promettre.
+    WARNING -- `min_iter` is a "best effort", not a guarantee: `ftol=0` does not forbid an
+    early stop, it conditions it on an EXACTLY zero reduction (the `factr` test of
+    L-BFGS-B), which a perfectly flat direction reaches. Observed on DISKS: 9 steps for
+    `min_iter=10`, scipy returning `CONVERGENCE: RELATIVE REDUCTION OF F <= FACTR*EPSMCH`, and a
+    call restarted from that point makes no step at all (a truly stationary point for the
+    line search). Do not assert `nb_steps >= min_iter`: nothing can promise it.
 
-    `disp_tol` : pendant ce second appel, arrêt anticipé (levée de `StopIteration` depuis le
-    callback -- supporté nativement par `scipy.optimize.minimize` depuis la 1.11) dès que le
-    déplacement max d'un point entre deux pas passe sous ce seuil (mêmes unités que les points).
-    Combine bien avec `min_iter` : "au moins `min_iter` pas, puis tant que ça bouge encore".
-    `None` (défaut) désactive ce critère -- seul `ftol` scipy arrête alors la phase 2.
+    `disp_tol`: during this second call, early stop (raising `StopIteration` from the
+    callback -- natively supported by `scipy.optimize.minimize` since 1.11) as soon as the
+    max displacement of a point between two steps falls below this threshold (same units as the points).
+    Combines well with `min_iter`: "at least `min_iter` steps, then as long as it still moves".
+    `None` (default) disables this criterion -- only scipy's `ftol` then stops phase 2.
     """
 
     def __init__(self, max_iter: int = 100, ftol: float = 1e-8,
@@ -140,10 +140,11 @@ class LBFGS(Optimizer):
         x0_flat = x0.reshape(-1)
         # jit ONCE (compiled on the flat 1D signature scipy calls with) and reuse across iterations.
         loss_j = driver.jit(lambda xf: scalar_loss(xf.reshape(shape_orig)))
+        loss_f = lambda xf: float(loss_j(xf))      # scipy wants a plain float (a torch scalar has a torch dtype)
         grad_j = driver.jit(lambda xf: driver.grad(scalar_loss)(xf.reshape(shape_orig)).reshape(-1))
 
         x_flat = _two_phase_lbfgsb(
-            loss_j, grad_j, x0_flat, shape_orig,
+            loss_f, grad_j, x0_flat, shape_orig,
             max_iter=self.max_iter, ftol=self.ftol, min_iter=self.min_iter, disp_tol=self.disp_tol,
             callback=callback,
         )
@@ -151,19 +152,19 @@ class LBFGS(Optimizer):
 
 
 class FusedLBFGS(Optimizer):
-    """L-BFGS via scipy, comme `LBFGS`, mais pour un coût dont le gradient vient d'une évaluation
-    FUSIONNÉE externe (`value_and_grad(points) -> (cost: float, grad: ndarray)`, ex.
-    `dirac_sycl.diracs_cost_grad`) plutôt que de l'autodiff Jax -- tracer coût et gradient
-    séparément (ce que `LBFGS` fait via `driver.jit`/`driver.grad`) jetterait cette fusion (le
-    kernel SYCL calcule les deux en un seul passage, voir `dirac_sycl.py`).
+    """L-BFGS via scipy, like `LBFGS`, but for a cost whose gradient comes from an external
+    FUSED evaluation (`value_and_grad(points) -> (cost: float, grad: ndarray)`, e.g.
+    `dirac_fused.diracs_cost_grad`) rather than from Jax autodiff -- tracing cost and gradient
+    separately (what `LBFGS` does via `driver.jit`/`driver.grad`) would throw away this fusion (the
+    fused kernel computes both in a single pass, see `dirac_fused.py`).
 
-    Même politique `min_iter`/`disp_tol` que `LBFGS` (voir sa docstring, machinerie commune dans
-    `_two_phase_lbfgsb`) -- seule diffère la façon dont scipy obtient `(valeur, gradient)` :
-    `jac=True`, `value_and_grad` répondant déjà au contrat scipy pour cette option.
+    Same `min_iter`/`disp_tol` policy as `LBFGS` (see its docstring, common machinery in
+    `_two_phase_lbfgsb`) -- only the way scipy obtains `(value, gradient)` differs:
+    `jac=True`, `value_and_grad` already meeting the scipy contract for this option.
 
-    `minimize`'s `scalar_loss` n'est PAS ici une fonction scalaire jax-traçable comme pour les
-    autres optimiseurs, mais directement `value_and_grad` -- voir `Reconstruction.run`, qui choisit
-    l'un ou l'autre appel selon le type de l'optimiseur.
+    `minimize`'s `scalar_loss` is NOT here a jax-traceable scalar function as for the
+    other optimizers, but directly `value_and_grad` -- see `Reconstruction.run`, which chooses
+    one call or the other depending on the type of the optimizer.
     """
 
     def __init__(self, max_iter: int = 100, ftol: float = 1e-8,
@@ -278,28 +279,28 @@ class Adam(Optimizer):
 
 
 class SubspaceNewtonLBFGS(FusedLBFGS):
-    """Prototype : au lieu de la mémoire de courbure interne à scipy (`LBFGS`), garde une pile
-    explicite des `max_dirs - 1` derniers pas RÉELLEMENT pris (`x_k - x_{k-1}`, normalisés) plus
-    le gradient courant, comme base d'un sous-espace, et résout à CHAQUE pas un Newton EXACT dans
-    ce sous-espace (`m` <= `max_dirs` inconnues `a`, `m x m`) au lieu d'une simple direction de
-    descente + line search 1D -- `dirac_sycl.subspace_hessian` fournit `(H, b)` en un second
-    `driver.call` fusionné, formule fermée (voir sa docstring pour la dérivation).
+    """Prototype: instead of scipy's internal curvature memory (`LBFGS`), keeps an
+    explicit stack of the last `max_dirs - 1` steps ACTUALLY taken (`x_k - x_{k-1}`, normalized) plus
+    the current gradient, as the basis of a subspace, and solves at EACH step an EXACT Newton in
+    this subspace (`m` <= `max_dirs` unknowns `a`, `m x m`) instead of a simple descent
+    direction + 1D line search -- `dirac_fused.subspace_hessian` provides `(H, b)` in a second fused
+    `driver.call`, closed formula (see its docstring for the derivation).
 
-    Empile les pas RÉELLEMENT pris, PAS les gradients successifs (première version testée) : près
-    d'un optimum, des gradients successifs deviennent quasi-colinéaires (le zigzag classique de la
-    descente de gradient), donc une base de gradients bruts finit par ne plus porter d'info
-    nouvelle -- `H` devient mal conditionnée et le damping Tikhonov écrase le peu de signal utile
-    avec le bruit. Les pas RÉELLEMENT pris jouent le rôle des `s_k` de L-BFGS (une direction
-    différente à chaque itération QUAND ça converge bien) sans reconstituer tout son appareil de
-    paires `(s_k, y_k)`. Le gradient courant reste TOUJOURS dans la base (frais, jamais historique)
-    pour garantir au moins une direction de descente valide même quand l'historique est vide (1er
-    pas) ou dégénéré.
+    Stacks the steps ACTUALLY taken, NOT the successive gradients (first version tested): near
+    an optimum, successive gradients become nearly collinear (the classic zigzag of
+    gradient descent), so a basis of raw gradients ends up carrying no new
+    info -- `H` becomes ill-conditioned and the Tikhonov damping crushes the little useful signal
+    with noise. The steps ACTUALLY taken play the role of L-BFGS's `s_k` (a different direction
+    at each iteration WHEN it converges well) without rebuilding its whole apparatus of
+    `(s_k, y_k)` pairs. The current gradient ALWAYS stays in the basis (fresh, never historical)
+    to guarantee at least one valid descent direction even when the history is empty (1st
+    step) or degenerate.
 
-    N'utilise PAS `_two_phase_lbfgsb`/scipy (pas de mémoire de courbure L-BFGS à faire tourner ici,
-    la Hessienne restreinte est recalculée à chaque pas) : boucle Python maison, avec un
-    backtracking Armijo comme garde-fou -- le pas Newton du sous-espace n'est optimal que pour le
-    modèle quadratique LOCAL (assignation figée), pas pour la vraie perte (non convexe, non lisse
-    aux changements d'assignation).
+    Does NOT use `_two_phase_lbfgsb`/scipy (no L-BFGS curvature memory to run here,
+    the restricted Hessian is recomputed at each step): home-made Python loop, with an
+    Armijo backtracking as a safeguard -- the subspace Newton step is only optimal for the
+    LOCAL quadratic model (frozen assignment), not for the true loss (nonconvex, nonsmooth
+    at assignment changes).
     """
 
     def __init__(self, sinogram, max_dirs: int = 5, max_iter: int = 60, ftol: float = 1e-10,
@@ -313,30 +314,30 @@ class SubspaceNewtonLBFGS(FusedLBFGS):
         self.c1 = c1
         self.rho = rho
         self.max_backtracks = max_backtracks
-        #: optionnel, `diag_callback(step, x, cost, g, directions, m, H, b, a, step_dir,
-        #: directional_deriv)` appelé APRÈS résolution du pas Newton du sous-espace mais AVANT le
-        #: backtracking -- pour inspecter le modèle quadratique local (ex. le comparer à la vraie
-        #: perte le long de `step_dir`, voir `experiments/lung_alveoli.run_subspace_alpha_profile`)
-        #: sans dupliquer la logique de `minimize`. `directions` n'est passé QUE sur `[:m]` (les
-        #: colonnes actives, pas le padding `MAX_DIRS`).
+        #: optional, `diag_callback(step, x, cost, g, directions, m, H, b, a, step_dir,
+        #: directional_deriv)` called AFTER solving the subspace Newton step but BEFORE the
+        #: backtracking -- to inspect the local quadratic model (e.g. compare it to the true
+        #: loss along `step_dir`, see `experiments/lung_alveoli.run_subspace_alpha_profile`)
+        #: without duplicating the logic of `minimize`. `directions` is passed ONLY on `[:m]` (the
+        #: active columns, not the `MAX_DIRS` padding).
         self.diag_callback = diag_callback
 
     def minimize(self, value_and_grad, x0, callback=None):
-        from . import dirac_sycl
+        from . import dirac_fused
 
-        MAX_DIRS = dirac_sycl.MAX_DIRS
+        MAX_DIRS = dirac_fused.MAX_DIRS
         if self.max_dirs > MAX_DIRS:
-            raise ValueError(f"max_dirs={self.max_dirs} dépasse dirac_sycl.MAX_DIRS={MAX_DIRS}")
+            raise ValueError(f"max_dirs={self.max_dirs} exceeds dirac_fused.MAX_DIRS={MAX_DIRS}")
 
         x = x0.copy() if isinstance(x0, np.ndarray) else np.array(x0)
         shape = x.shape
-        # pas RÉELLEMENT pris (normalisés), les plus anciens en tête -- le gradient courant (frais,
-        # jamais historique) occupe le slot restant, voir la docstring de la classe.
+        # steps ACTUALLY taken (normalized), oldest first -- the current gradient (fresh,
+        # never historical) occupies the remaining slot, see the class docstring.
         step_history = deque(maxlen=max(self.max_dirs - 1, 0))
 
-        # pas de `callback(-1, x)` ici : `Reconstruction.run` l'a déjà appelé pour l'état initial
-        # avant `optimizer.minimize` (voir sa docstring) -- même convention que `LBFGS`/
-        # `GradientDescentLineSearch`, dont le premier callback est `step=0`.
+        # no `callback(-1, x)` here: `Reconstruction.run` already called it for the initial state
+        # before `optimizer.minimize` (see its docstring) -- same convention as `LBFGS`/
+        # `GradientDescentLineSearch`, whose first callback is `step=0`.
         cost, g = value_and_grad(x)
 
         for step in range(self.max_iter):
@@ -348,7 +349,7 @@ class SubspaceNewtonLBFGS(FusedLBFGS):
             for i, d in enumerate(basis):
                 directions[i] = d
 
-            H5, b5 = dirac_sycl.subspace_hessian(x, directions, self.sinogram)
+            H5, b5 = dirac_fused.subspace_hessian(x, directions, self.sinogram)
             H = 0.5 * (H5[:m, :m] + H5[:m, :m].T)
             b = b5[:m]
 
@@ -359,8 +360,8 @@ class SubspaceNewtonLBFGS(FusedLBFGS):
                 a = -np.linalg.lstsq(H, b, rcond=None)[0]
             step_dir = sum(a[i] * directions[i] for i in range(m))
 
-            # backtracking Armijo le long du pas Newton du sous-espace -- garde-fou : le modèle
-            # quadratique local n'est exact qu'à assignation figée, pas globalement.
+            # Armijo backtracking along the subspace Newton step -- safeguard: the local
+            # quadratic model is only exact at frozen assignment, not globally.
             directional_deriv = float(np.sum(g * step_dir))
 
             if self.diag_callback is not None:
@@ -377,8 +378,8 @@ class SubspaceNewtonLBFGS(FusedLBFGS):
                     break
                 t *= self.rho
             else:
-                # secours : un pas de descente de gradient normalisé, garanti descendant pour t assez
-                # petit -- ne devrait quasiment jamais se déclencher (H est PSD par construction).
+                # fallback: a normalized gradient descent step, guaranteed descending for t small
+                # enough -- should almost never trigger (H is PSD by construction).
                 t = 1.0
                 d = g / g_norm if g_norm > 0 else g
                 for _ in range(self.max_backtracks):
@@ -391,9 +392,9 @@ class SubspaceNewtonLBFGS(FusedLBFGS):
                 else:
                     x_new, cost_new, g_new = x_try, cost_try, g_try
 
-            # empile le pas RÉELLEMENT pris (pas le pas candidat `step_dir` -- le backtracking a pu
-            # le raccourcir, voire basculer sur le secours gradient) pour la base de la prochaine
-            # itération, voir la docstring de la classe.
+            # stack the step ACTUALLY taken (not the candidate step `step_dir` -- the backtracking may have
+            # shortened it, or even switched to the gradient fallback) for the basis of the next
+            # iteration, see the class docstring.
             delta = x_new - x
             delta_norm = np.linalg.norm(delta)
             if delta_norm > 0:

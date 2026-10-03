@@ -1,45 +1,45 @@
-"""Le HALO : la matière HORS du champ de vue, et son empreinte sur le sinogramme.
+"""The HALO: the matter OUTSIDE the field of view, and its footprint on the sinogram.
 
-Quand la pièce observée est plus large que le détecteur, chaque profil mesuré contient la
-contribution de matière qui n'est PAS reconstructible : à l'angle θ, un point de rayon r > S
-(S = extent/2) n'est vu que sur la fenêtre angulaire `2·arcsin( S/r )`. La masse mesurée
-`∫p_θ` varie donc avec l'angle, alors que `SdotPlan1d` normalise les deux distributions à masse 1 :
-l'excédent est redistribué DANS le champ, et vient boucher les vides que les diracs/disques
-étaient précisément là pour préserver.
+When the observed part is wider than the detector, each measured profile contains the
+contribution of matter that is NOT reconstructible: at angle θ, a point of radius r > S
+(S = extent/2) is only seen over the angular window `2·arcsin( S/r )`. The measured mass
+`∫p_θ` therefore varies with the angle, whereas `SdotPlan1d` normalizes both distributions to mass 1:
+the excess is redistributed INSIDE the field, and fills in the voids that the diracs/disks
+were precisely there to preserve.
 
-Ce module retire cet excédent. Le parti pris, qui explique toute la suite :
+This module removes that excess. The design choice, which explains everything that follows:
 
-    on ne cherche PAS à reconstruire l'extérieur, seulement son EMPREINTE `c( θ, s )`.
+    we do NOT try to reconstruct the exterior, only its FOOTPRINT `c( θ, s )`.
 
-Les données couvrent toutes les droites rencontrant le disque de rayon S -- c'est le *problème
-intérieur* de la transformée de Radon, dont le noyau n'est pas trivial : l'extérieur n'est pas
-identifiable en détail. Le mailler finement fabriquerait des degrés de liberté qui iraient
-absorber du vrai signal intérieur. Deux conséquences de conception :
+The data cover all lines hitting the disk of radius S -- this is the *interior problem*
+of the Radon transform, whose kernel is non-trivial: the exterior is not identifiable in
+detail. Meshing it finely would create degrees of freedom that would go and
+absorb real interior signal. Two design consequences:
 
-- le halo est GROSSIER, et de plus en plus grossier vers l'extérieur (voir `_build_cells`) ;
-- il n'est pas non plus une fonction libre de `( θ, s )` -- ce serait trop de DDL, et dégénéré
-  avec l'intérieur. On le contraint à être la transformée de Radon d'une densité ≥ 0 supportée
-  hors du disque de rayon S, ce qui impose GRATUITEMENT la cohérence angulaire (conditions de
-  moments de Helgason-Ludwig). C'est cette contrainte qui rend l'estimation bien posée avec très
-  peu de paramètres.
+- the halo is COARSE, and gets coarser and coarser towards the outside (see `_build_cells`);
+- it is not a free function of `( θ, s )` either -- that would be too many DOFs, and degenerate
+  with the interior. It is constrained to be the Radon transform of a density ≥ 0 supported
+  outside the disk of radius S, which FOR FREE enforces angular consistency (Helgason-Ludwig
+  moment conditions). It is this constraint that makes the estimation well posed with very
+  few parameters.
 
-Ce qui rend le partage intérieur/extérieur identifiable en PRATIQUE alors qu'il ne l'est pas au
-sens de l'opérateur : les deux a priori sont orthogonaux en échelle -- l'intérieur est parcimonieux
-et veut laisser des vides, le halo est lisse et grossier.
+What makes the interior/exterior split identifiable in PRACTICE although it is not so in
+the operator sense: the two priors are orthogonal in scale -- the interior is sparse
+and wants to leave voids, the halo is smooth and coarse.
 
-`Halo` est FIXE (le maillage ne bouge pas, contrairement aux diracs) : la carte
-`densités des cellules -> contribution au sinogramme` est donc un opérateur LINÉAIRE précalculé
-une fois, et l'estimation est un moindres carrés POSITIF -- convexe, sans aucune non-convexité
-ajoutée au problème.
+`Halo` is FIXED (the mesh does not move, unlike the diracs): the map
+`cell densities -> contribution to the sinogram` is therefore a LINEAR operator precomputed
+once, and the estimation is a POSITIVE least squares -- convex, with no non-convexity
+added to the problem.
 
-`alternate` enchaîne les deux blocs (l'estimation du halo a besoin de l'intérieur, et
-réciproquement) ; deux ou trois passes suffisent, justement parce qu'ils vivent à des échelles
-différentes.
+`alternate` chains the two blocks (the halo estimation needs the interior, and
+vice versa); two or three passes are enough, precisely because they live at different
+scales.
 
-`Sinogram.debias_and_equalize_mass` est le cas dégénéré de ce module : un halo à UN degré de
-liberté par angle (`c_k` constant en `s`), sans aucun lien géométrique entre les angles. Correct
-quand l'objet est BEAUCOUP plus grand que la fenêtre, faux dès qu'il ne dépasse que d'un facteur
-1.5-2 -- le cas gênant.
+`Sinogram.debias_and_equalize_mass` is the degenerate case of this module: a halo with ONE degree of
+freedom per angle (`c_k` constant in `s`), with no geometric link between angles. Correct
+when the object is MUCH larger than the window, wrong as soon as it only exceeds it by a factor
+1.5-2 -- the troublesome case.
 """
 import numpy as np
 from scipy.optimize import nnls
@@ -50,29 +50,29 @@ from .Sinogram import Sinogram
 
 
 class Halo:
-    """Maillage log-polaire FIXE de l'extérieur du champ de vue, son opérateur de projection, et
-    les densités ajustées.
+    """FIXED log-polar mesh of the exterior of the field of view, its projection operator, and
+    the fitted densities.
 
-    Géométrie (tout est en coordonnées MONDE, celles de `Sinogram`) :
-    - `inner_radius` (défaut `extent/2`) : le bord du champ de vue -- rien du halo n'entre dedans,
-      c'est le domaine réservé aux diracs/disques ;
-    - `outer_radius` : jusqu'où va la matière. À surestimer plutôt qu'à sous-estimer : une cellule
-      inutile prend le poids 0 (la positivité s'en charge), une cellule manquante ne peut pas être
-      inventée ;
-    - `growth` : rapport des rayons de deux anneaux consécutifs (épaisseur géométriquement
-      croissante) ;
-    - `nb_sectors` : nombre de secteurs que vaudrait un anneau situé EXACTEMENT en `inner_radius` ;
-      les vrais anneaux en ont moins, de plus en plus en s'éloignant (voir `_build_cells`). Le
-      défaut de 32 est le coude mesuré sur un objet extérieur compact (le cas le plus exigeant) :
-      en dessous, le maillage ne localise plus l'objet et la masse visible par angle décroche ;
-      au-dessus, l'erreur ne descend plus -- elle est alors limitée par la grille grossière.
+    Geometry (everything is in WORLD coordinates, those of `Sinogram`):
+    - `inner_radius` (default `extent/2`): the edge of the field of view -- none of the halo enters it,
+      it is the domain reserved for the diracs/disks;
+    - `outer_radius`: how far the matter extends. Better to overestimate than underestimate: a useless
+      cell gets weight 0 (positivity takes care of it), a missing cell cannot be
+      invented;
+    - `growth`: ratio of the radii of two consecutive rings (geometrically
+      growing thickness);
+    - `nb_sectors`: number of sectors a ring located EXACTLY at `inner_radius` would have;
+      the real rings have fewer, more and more so as they move away (see `_build_cells`). The
+      default of 32 is the elbow measured on a compact exterior object (the most demanding case):
+      below it, the mesh no longer localizes the object and the visible mass per angle drops off;
+      above it, the error no longer decreases -- it is then limited by the coarse grid.
 
-    `nb_coarse_bins` : le halo est estimé sur une grille détecteur GROSSIÈRE (les cases mesurées
-    y sont regroupées par paquets entiers). Ce n'est pas qu'une économie : c'est une régularisation
-    de plus, et c'est cohérent avec la prémisse -- l'empreinte du halo n'a pas de structure fine.
+    `nb_coarse_bins`: the halo is estimated on a COARSE detector grid (the measured bins
+    are grouped there in whole packets). This is not just a saving: it is one more
+    regularization, and it is consistent with the premise -- the halo footprint has no fine structure.
 
-    Les poids (`weights`, une densité par cellule) démarrent à 0 -- un halo neuf ne corrige rien.
-    `fit` les met à jour ; toutes les méthodes de sortie (`values`, `corrected`, `mass`) les lisent.
+    The weights (`weights`, one density per cell) start at 0 -- a new halo corrects nothing.
+    `fit` updates them; all output methods (`values`, `corrected`, `mass`) read them.
     """
 
     def __init__( self, sinogram: Sinogram, outer_radius: float, *, inner_radius: float | None = None,
@@ -82,49 +82,49 @@ class Halo:
         self.inner_radius = float( inner_radius if inner_radius is not None else sinogram.extent / 2 )
         self.outer_radius = float( outer_radius )
         if self.outer_radius <= self.inner_radius:
-            raise ValueError( f"outer_radius ({ self.outer_radius }) doit dépasser inner_radius ({ self.inner_radius })" )
+            raise ValueError( f"outer_radius ({ self.outer_radius }) must exceed inner_radius ({ self.inner_radius })" )
         if growth <= 1.0:
-            raise ValueError( "growth doit être > 1" )
+            raise ValueError( "growth must be > 1" )
         self.growth = float( growth )
         self.nb_sectors = max( 1, int( nb_sectors ) )
         self.phi_per_bin = float( phi_per_bin )
         self.nb_phi_max = max( 8, int( nb_phi_max ) )
 
-        # géométrie détecteur, côté HÔTE (tout ce module est du numpy : ni différentiation ni jit --
-        # le halo est une CONSTANTE du point de vue de l'optimisation intérieure)
+        # detector geometry, HOST side (this whole module is numpy: neither differentiation nor jit --
+        # the halo is a CONSTANT from the point of view of the interior optimization)
         self.angles = np.asarray( sinogram.angles, dtype = float )
         self.nb_angles = int( self.angles.size )
         self.nb_bins = int( sinogram.nb_bins_host )
         self.s_min = float( sinogram.s_min )
         self.dw = float( sinogram.dw )
 
-        # regroupement des cases mesurées en cases grossières -- un diviseur exact de `nb_bins`,
-        # pour que le regroupement (moyenne) et son inverse (`np.repeat`) conservent la masse.
+        # grouping of the measured bins into coarse bins -- an exact divisor of `nb_bins`,
+        # so that the grouping (mean) and its inverse (`np.repeat`) conserve mass.
         self.group = self._group_size( nb_coarse_bins )
         self.nb_coarse = self.nb_bins // self.group
         self.coarse_dw = self.dw * self.group
         self.coarse_edges = self.s_min + self.coarse_dw * np.arange( self.nb_coarse + 1 )
 
         self.cells = self._build_cells()                                   # [ ( a, b, phi0, phi1, ring ) ]
-        #: `[ nb_cells, nb_angles, nb_coarse ]` -- densité projetée d'une cellule de densité 1
+        #: `[ nb_cells, nb_angles, nb_coarse ]` -- projected density of a cell of density 1
         self.operator = np.stack( [ self._cell_values( *c[ :4 ] ) for c in self.cells ] )
-        #: aire de chaque cellule, `[ nb_cells ]` (masse d'une cellule = aire x densité)
+        #: area of each cell, `[ nb_cells ]` (mass of a cell = area x density)
         self.areas = np.array( [ 0.5 * ( b * b - a * a ) * ( p1 - p0 ) for a, b, p0, p1, _ in self.cells ] )
-        #: densité ajustée par cellule, `[ nb_cells ]` -- 0 tant que `fit` n'a pas tourné
+        #: fitted density per cell, `[ nb_cells ]` -- 0 until `fit` has run
         self.weights = np.zeros( len( self.cells ) )
 
     def __repr__( self ) -> str:
-        return ( f"Halo( { self.nb_cells } cellules, r { self.inner_radius:.3g}..{ self.outer_radius:.3g}, "
-                 f"{ self.nb_coarse } cases grossières )" )
+        return ( f"Halo( { self.nb_cells } cells, r { self.inner_radius:.3g}..{ self.outer_radius:.3g}, "
+                 f"{ self.nb_coarse } coarse bins )" )
 
     @property
     def nb_cells( self ) -> int:
         return len( self.cells )
 
-    # -- géométrie ---------------------------------------------------------
+    # -- geometry ----------------------------------------------------------
 
     def _group_size( self, nb_coarse_bins: int ) -> int:
-        """Le plus petit diviseur de `nb_bins` donnant au plus `nb_coarse_bins` cases grossières."""
+        """The smallest divisor of `nb_bins` giving at most `nb_coarse_bins` coarse bins."""
         target = max( 1, int( np.ceil( self.nb_bins / max( 1, int( nb_coarse_bins ) ) ) ) )
         for g in range( target, self.nb_bins + 1 ):
             if self.nb_bins % g == 0:
@@ -132,15 +132,15 @@ class Halo:
         return self.nb_bins
 
     def _build_cells( self ):
-        """Anneaux d'épaisseur géométrique, découpés en secteurs de moins en moins nombreux.
+        """Rings of geometric thickness, cut into fewer and fewer sectors.
 
-        La loi de décroissance vient de la géométrie d'acquisition : un point de rayon r n'est vu
-        que sur une fenêtre angulaire `2·arcsin( S/r ) ≈ 2S/r`, donc le nombre de mesures touchant
-        l'anneau de rayon r décroît en `1/r` pendant que sa circonférence croît en `r` -- la taille
-        de cellule angulaire doit croître au moins comme `r²`, d'où `nb_secteurs ∝ ( S/r )²`.
+        The decay law comes from the acquisition geometry: a point of radius r is only seen
+        over an angular window `2·arcsin( S/r ) ≈ 2S/r`, so the number of measurements touching
+        the ring of radius r decreases as `1/r` while its circumference grows as `r` -- the angular
+        cell size must grow at least like `r²`, hence `nb_sectors ∝ ( S/r )²`.
 
-        Conséquence chiffrée : même sur un domaine dix fois plus large que le champ de vue, le halo
-        reste à quelques dizaines de DDL. C'est voulu (voir la docstring du module).
+        Quantitative consequence: even on a domain ten times wider than the field of view, the halo
+        stays at a few dozen DOFs. This is intended (see the module docstring).
         """
         cells, ring, a = [], 0, self.inner_radius
         while a < self.outer_radius * ( 1 - 1e-12 ):
@@ -152,55 +152,55 @@ class Halo:
             a, ring = b, ring + 1
         return cells
 
-    # -- opérateur de projection -------------------------------------------
+    # -- projection operator -----------------------------------------------
 
     def _cell_values( self, a: float, b: float, phi0: float, phi1: float ) -> np.ndarray:
-        """Densité projetée `[ nb_angles, nb_coarse ]` d'une cellule (secteur d'anneau) de densité 1.
+        """Projected density `[ nb_angles, nb_coarse ]` of a cell (ring sector) of density 1.
 
-        EXACT dans la direction radiale, quadrature dans la direction angulaire. À φ fixé, le
-        segment radial `r ∈ [a,b]` se projette sur `s = r·c` avec `c = cos( θ − φ )` ; l'élément de
-        masse `r dr dφ` devient `( s/c )( ds/c ) dφ`, soit la densité EXACTE `|s|/c²·dφ` sur
-        l'intervalle borné par `a·c` et `b·c` (masse totale `dφ( b² − a² )/2`, l'aire de la
-        tranche -- c'est la vérification du calcul). Intégrer analytiquement en r évite le facteur
-        `n_r` de coût d'une quadrature 2D, et rend exacte la singularité en `√( a² − s² )` du bord
-        interne, qui tombe pile aux extrémités du détecteur.
+        EXACT in the radial direction, quadrature in the angular direction. At fixed φ, the
+        radial segment `r ∈ [a,b]` projects onto `s = r·c` with `c = cos( θ − φ )`; the mass
+        element `r dr dφ` becomes `( s/c )( ds/c ) dφ`, i.e. the EXACT density `|s|/c²·dφ` on
+        the interval bounded by `a·c` and `b·c` (total mass `dφ( b² − a² )/2`, the area of the
+        slice -- this is the check of the computation). Integrating analytically in r avoids the
+        `n_r` cost factor of a 2D quadrature, and makes exact the `√( a² − s² )` singularity of the
+        inner edge, which falls right at the ends of the detector.
 
-        Il reste à sommer ces rampes `α|s|` sur les cases. Les déposer case par case coûterait le
-        nombre de cases couvertes ; on passe donc par la PRIMITIVE, dont chaque rampe ne modifie
-        que deux indices d'arête. Avec `β = sign(c)·dφ/( 2c² )`, `lo = min( a·c, b·c )` et
-        `hi = max( a·c, b·c )`, la primitive d'UNE rampe s'écrit sans indicatrice :
+        What remains is to sum these `α|s|` ramps over the bins. Depositing them bin by bin would cost the
+        number of covered bins; we therefore go through the PRIMITIVE, of which each ramp only modifies
+        two edge indices. With `β = sign(c)·dφ/( 2c² )`, `lo = min( a·c, b·c )` and
+        `hi = max( a·c, b·c )`, the primitive of ONE ramp is written without an indicator:
 
             F( x ) = β·( clip( x, lo, hi )² − lo² )
 
-        (nulle en `x ≤ lo`, constante `β( hi² − lo² )` = la masse en `x ≥ hi`). En séparant les
-        rampes finies / actives / pas encore commencées, la somme sur toutes les rampes vaut
-        `F( x ) = C( x ) + Q( x )·x² − L( x )` avec `Q = Σ_{lo≤x≤hi} β`, `L = Σ_{lo≤x} β·lo²` et
-        `C = Σ_{hi<x} β·hi²` -- trois fonctions en ESCALIER, donc trois `bincount` sur les indices
-        d'arête suivis d'un `cumsum`. Coût O(1) par nœud, indépendant du nombre de cases.
+        (zero for `x ≤ lo`, constant `β( hi² − lo² )` = the mass for `x ≥ hi`). By separating the
+        finished / active / not yet started ramps, the sum over all ramps equals
+        `F( x ) = C( x ) + Q( x )·x² − L( x )` with `Q = Σ_{lo≤x≤hi} β`, `L = Σ_{lo≤x} β·lo²` and
+        `C = Σ_{hi<x} β·hi²` -- three STEP functions, hence three `bincount`s on the edge
+        indices followed by a `cumsum`. O(1) cost per node, independent of the number of bins.
 
-        Le saut de chacune est porté par la PREMIÈRE ARÊTE À DROITE de sa position (`ceil`, pas
-        `round` : arrondir déplacerait une rampe sur deux d'une demi-case, et l'erreur, propagée
-        par le `cumsum` puis multipliée par `x²`, contaminerait tout le profil). C'est ce choix qui
-        rend le résultat EXACT et non approché : `L` et `C` gardant les vrais `lo²`/`hi²` et non
-        des valeurs arrondies, on a `F( e ) = β( e² − lo² )` à l'arête près de `lo`, donc la masse
-        de chaque case est l'intégrale exacte de la rampe sur cette case.
+        The jump of each is carried by the FIRST EDGE TO THE RIGHT of its position (`ceil`, not
+        `round`: rounding would move one ramp out of two by half a bin, and the error, propagated
+        by the `cumsum` then multiplied by `x²`, would contaminate the whole profile). It is this choice that
+        makes the result EXACT and not approximate: `L` and `C` keeping the true `lo²`/`hi²` and not
+        rounded values, we have `F( e ) = β( e² − lo² )` at the edge next to `lo`, hence the mass
+        of each bin is the exact integral of the ramp over that bin.
 
-        `β` explose quand `c → 0` (le segment se projette en un point). Rien ne DIVERGE pour
-        autant -- `β·lo² = dφ·a²/2`, `β·hi² = dφ·b²/2` et `β·x²` restent finis, `x` étant coincé
-        entre `lo` et `hi` -- mais `F = C + Q·x² − L` devient une différence de termes énormes,
-        et l'annulation catastrophique qui s'ensuit ruine tout le profil (mesuré : masse totale
-        négative pour certaines valeurs de `phi_per_bin`, celles qui alignent un nœud sur
-        `θ ± π/2`). On borne donc `|c|` par en dessous, à la valeur qui rend la rampe mille fois
-        plus étroite qu'une case : au-delà sa position exacte n'a plus aucun sens à cette
-        résolution, et `β` reste dans une plage où la soustraction est exacte.
+        `β` blows up when `c → 0` (the segment projects onto a point). Nothing DIVERGES
+        for all that -- `β·lo² = dφ·a²/2`, `β·hi² = dφ·b²/2` and `β·x²` stay finite, `x` being squeezed
+        between `lo` and `hi` -- but `F = C + Q·x² − L` becomes a difference of huge terms,
+        and the resulting catastrophic cancellation ruins the whole profile (measured: negative
+        total mass for certain values of `phi_per_bin`, those that align a node on
+        `θ ± π/2`). We therefore bound `|c|` from below, at the value that makes the ramp a thousand times
+        narrower than a bin: beyond that its exact position has no meaning at this
+        resolution, and `β` stays in a range where the subtraction is exact.
 
-        Les indices sont écrêtés dans `[ 0, nb_coarse+1 ]` : une rampe entièrement à GAUCHE du
-        détecteur s'achève à l'arête 0 (masse déjà écoulée, aucune case touchée), une rampe
-        entièrement à DROITE atterrit dans l'index de débordement `nb_coarse+1`, jamais lu.
+        The indices are clipped to `[ 0, nb_coarse+1 ]`: a ramp entirely to the LEFT of the
+        detector ends at edge 0 (mass already spent, no bin touched), a ramp
+        entirely to the RIGHT lands in the overflow index `nb_coarse+1`, never read.
         """
-        # pas angulaire : `phi_per_bin` extrémités de rampe par case grossière (le nœud le plus
-        # externe de la cellule, en `b`, fixe le pas). En dessous, la somme des rampes ondule à
-        # l'échelle de la case, alors que l'empreinte du halo, elle, est lisse.
+        # angular step: `phi_per_bin` ramp endpoints per coarse bin (the outermost node of the
+        # cell, at `b`, sets the step). Below that, the sum of the ramps ripples at
+        # the bin scale, whereas the halo footprint is smooth.
         n_phi = int( np.clip( np.ceil( self.phi_per_bin * b * ( phi1 - phi0 ) / self.coarse_dw ),
                               8, self.nb_phi_max ) )
         dphi = ( phi1 - phi0 ) / n_phi
@@ -213,12 +213,12 @@ class Halo:
         lo = np.minimum( a * c, b * c )
         hi = np.maximum( a * c, b * c )
 
-        W = self.nb_coarse + 2                                             # +1 arête, +1 débordement
+        W = self.nb_coarse + 2                                             # +1 edge, +1 overflow
         base = np.arange( self.nb_angles )[ :, None ] * W
         ml = self.nb_angles * W
 
         def edge_of( pos ):
-            """Index (aplati) de la première arête à droite de `pos`."""
+            """(Flattened) index of the first edge to the right of `pos`."""
             x = np.ceil( ( pos - self.s_min ) / self.coarse_dw )
             return ( base + np.clip( x, 0, W - 1 ).astype( int ) ).ravel()
 
@@ -232,17 +232,17 @@ class Halo:
         L = np.cumsum( L.reshape( self.nb_angles, W ), axis = 1 )[ :, :n ]
         C = np.cumsum( C.reshape( self.nb_angles, W ), axis = 1 )[ :, :n ]
 
-        F = C + Q * self.coarse_edges ** 2 - L                             # primitive aux arêtes
-        return ( F[ :, 1: ] - F[ :, :-1 ] ) / self.coarse_dw               # masse par case -> densité
+        F = C + Q * self.coarse_edges ** 2 - L                             # primitive at the edges
+        return ( F[ :, 1: ] - F[ :, :-1 ] ) / self.coarse_dw               # mass per bin -> density
 
     # -- estimation --------------------------------------------------------
 
     def _smoothness_rows( self ) -> np.ndarray:
-        """Différences entre secteurs ANGULAIREMENT voisins d'un même anneau (cycliques).
+        """Differences between ANGULARLY neighboring sectors of the same ring (cyclic).
 
-        Pas de couplage radial : les anneaux n'ont pas le même nombre de secteurs, l'appariement
-        serait arbitraire -- et la positivité + la grossièreté du maillage régularisent déjà
-        beaucoup dans cette direction.
+        No radial coupling: the rings do not have the same number of sectors, the pairing
+        would be arbitrary -- and positivity + the coarseness of the mesh already regularize
+        a lot in that direction.
         """
         rings: dict[ int, list[ int ] ] = {}
         for i, ( _, _, _, _, ring ) in enumerate( self.cells ):
@@ -260,36 +260,36 @@ class Halo:
 
     def fit( self, residual, *, target_mass = None, mass_weight: float = 10.0,
              ridge: float = 1e-3, smooth: float = 3e-2 ) -> "Halo":
-        """Ajuste les densités des cellules sur le `residual` (mesuré MOINS modèle intérieur),
-        `[ nb_angles, nb_bins ]` en DENSITÉ. Met `weights` à jour et renvoie `self`.
+        """Fits the cell densities to the `residual` (measured MINUS interior model),
+        `[ nb_angles, nb_bins ]` as a DENSITY. Updates `weights` and returns `self`.
 
-        Le résidu est regroupé sur la grille grossière avant l'ajustement -- c'est là qu'on gagne
-        le plus : le bruit du résidu (sous-échantillonnage du nuage, cf. `interior_values`) est
-        blanc entre cases, et une régression à quelques dizaines de DDL sur `nb_angles x nb_coarse`
-        équations le divise d'un facteur `√( nb_angles·nb_coarse / nb_cells )`, typiquement 70.
+        The residual is grouped onto the coarse grid before fitting -- that is where we gain
+        the most: the residual noise (undersampling of the cloud, cf. `interior_values`) is
+        white across bins, and a regression with a few dozen DOFs on `nb_angles x nb_coarse`
+        equations divides it by a factor `√( nb_angles·nb_coarse / nb_cells )`, typically 70.
 
-        `target_mass` (`[ nb_angles ]`, optionnel) : la masse que le halo doit rendre VISIBLE à
-        chaque angle, soit `∫p_θ − M_in`. C'est l'ancrage le plus solide du problème -- il vient
-        directement de la donnée, sans passer par la forme des profils -- et il conditionne
-        nettement mieux l'ajustement. `mass_weight` en règle le poids relatif.
+        `target_mass` (`[ nb_angles ]`, optional): the mass the halo must make VISIBLE at
+        each angle, i.e. `∫p_θ − M_in`. This is the most solid anchor of the problem -- it comes
+        directly from the data, without going through the shape of the profiles -- and it conditions the
+        fit much better. `mass_weight` sets its relative weight.
 
-        `ridge` / `smooth` : Tikhonov, et lissage angulaire intra-anneau (`_smoothness_rows`).
-        Chaque bloc est normalisé par sa propre norme de Frobenius, donc les trois poids sont
-        sans dimension et comparables entre eux.
+        `ridge` / `smooth`: Tikhonov, and intra-ring angular smoothing (`_smoothness_rows`).
+        Each block is normalized by its own Frobenius norm, so the three weights are
+        dimensionless and comparable with each other.
 
-        La résolution est un moindres carrés POSITIF (`scipy.optimize.nnls`) : la positivité n'est
-        pas cosmétique, c'est elle qui empêche le halo d'aller creuser du signal intérieur.
+        The solve is a POSITIVE least squares (`scipy.optimize.nnls`): positivity is not
+        cosmetic, it is what prevents the halo from digging into interior signal.
         """
         res = np.asarray( residual, dtype = float )
         if res.shape != ( self.nb_angles, self.nb_bins ):
-            raise ValueError( f"residual doit être de shape [ { self.nb_angles }, { self.nb_bins } ], "
-                              f"reçu { res.shape }" )
+            raise ValueError( f"residual must have shape [ { self.nb_angles }, { self.nb_bins } ], "
+                              f"got { res.shape }" )
         coarse = res.reshape( self.nb_angles, self.nb_coarse, self.group ).mean( axis = 2 )
 
         blocks = [ ( self.operator.reshape( self.nb_cells, -1 ).T, coarse.ravel(), 1.0 ) ]
 
         if target_mass is not None:
-            # masse visible par angle d'une cellule de densité 1 : [ nb_angles, nb_cells ]
+            # visible mass per angle of a cell of density 1: [ nb_angles, nb_cells ]
             vis = self.operator.sum( axis = 2 ).T * self.coarse_dw
             blocks.append( ( vis, np.asarray( target_mass, dtype = float ).ravel(), float( mass_weight ) ) )
         if ridge > 0:
@@ -310,32 +310,32 @@ class Halo:
         self.weights = nnls( np.concatenate( mats ), np.concatenate( rhs ) )[ 0 ]
         return self
 
-    # -- sorties -----------------------------------------------------------
+    # -- outputs -----------------------------------------------------------
 
     def values( self ) -> np.ndarray:
-        """Empreinte du halo sur le sinogramme, `[ nb_angles, nb_bins ]`, en densité.
+        """Footprint of the halo on the sinogram, `[ nb_angles, nb_bins ]`, as a density.
 
-        Le retour à la grille fine est une simple répétition (`np.repeat`) : constante par paquet,
-        donc de masse exacte. L'escalier qu'elle introduit est du deuxième ordre -- l'empreinte
-        varie peu d'une case grossière à la suivante, c'est toute la prémisse du module.
+        The return to the fine grid is a simple repetition (`np.repeat`): constant per packet,
+        hence of exact mass. The staircase it introduces is second order -- the footprint
+        varies little from one coarse bin to the next, which is the whole premise of the module.
         """
         coarse = np.tensordot( self.weights, self.operator, axes = ( 0, 0 ) )
         return np.repeat( coarse, self.group, axis = 1 )
 
     def visible_mass( self ) -> np.ndarray:
-        """Masse du halo tombant DANS le détecteur, par angle, `[ nb_angles ]`."""
+        """Mass of the halo falling INSIDE the detector, per angle, `[ nb_angles ]`."""
         return self.values().sum( axis = 1 ) * self.dw
 
     def mass( self ) -> float:
-        """Masse totale du halo (dont une partie n'est visible à aucun angle)."""
+        """Total mass of the halo (part of which is visible at no angle)."""
         return float( self.weights @ self.areas )
 
     def corrected( self, sinogram: Sinogram | None = None ) -> Sinogram:
-        """Le sinogramme débarrassé de l'empreinte du halo, écrêté à 0.
+        """The sinogram stripped of the halo footprint, clipped at 0.
 
-        L'écrêtage rompt légèrement la comptabilité de masse ; c'est sans conséquence ici (les
-        valeurs concernées sont du bruit autour de zéro) et ça garantit une densité cible valide
-        pour `SdotPlan1d`.
+        The clipping slightly breaks the mass accounting; this is harmless here (the
+        values concerned are noise around zero) and it guarantees a valid target density
+        for `SdotPlan1d`.
         """
         sino = sinogram if sinogram is not None else self.sinogram
         out = Sinogram( nb_angles = self.nb_angles, nb_bins = self.nb_bins,
@@ -344,29 +344,29 @@ class Halo:
         return out
 
 
-# -- projection du nuage intérieur -----------------------------------------
+# -- projection of the interior cloud --------------------------------------
 
 
 def interior_values( sinogram: Sinogram, points, mass: float, radius: float | None = None,
                      max_points: int | None = None, seed: int = 0 ) -> np.ndarray:
-    """Densité `[ nb_angles, nb_bins ]` projetée par le nuage `points`, portant la masse totale
-    `mass` à chaque angle.
+    """Density `[ nb_angles, nb_bins ]` projected by the cloud `points`, carrying the total mass
+    `mass` at each angle.
 
-    `mass` est fournie de l'EXTÉRIEUR parce que le nuage n'en a pas : `SdotPlan1d` normalise ses deux
-    distributions, donc la reconstruction ne fixe que la FORME. C'est `alternate` qui décide de la
-    masse intérieure (voir sa docstring).
+    `mass` is supplied from OUTSIDE because the cloud has none: `SdotPlan1d` normalizes its two
+    distributions, so the reconstruction only fixes the SHAPE. It is `alternate` that decides the
+    interior mass (see its docstring).
 
-    `radius` : `None` pour des diracs (déposés linéairement sur les deux cases voisines, masse
-    conservée), sinon des disques de ce rayon (`DiskProjector`, la même projection que celle que
-    minimise `DiskModel`).
+    `radius`: `None` for diracs (deposited linearly on the two neighboring bins, mass
+    conserved), otherwise disks of that radius (`DiskProjector`, the same projection as the one
+    minimized by `DiskModel`).
 
-    `max_points` : le nuage est SOUS-ÉCHANTILLONNÉ au-delà. Ce résidu ne sert qu'à donner une forme
-    au halo, à sa résolution grossière et via une régression à quelques dizaines de DDL : y mettre
-    les 1e7 diracs d'une reconstruction fine coûterait cher pour rien (cf. `Halo.fit`).
+    `max_points`: the cloud is SUBSAMPLED beyond that. This residual is only used to give a shape to
+    the halo, at its coarse resolution and via a regression with a few dozen DOFs: putting in
+    the 1e7 diracs of a fine reconstruction would be costly for nothing (cf. `Halo.fit`).
     """
     pts = np.asarray( points, dtype = float )
     if pts.ndim != 2 or pts.shape[ 1 ] != 2:
-        raise ValueError( f"points doit être de shape [ n, 2 ], reçu { pts.shape }" )
+        raise ValueError( f"points must have shape [ n, 2 ], got { pts.shape }" )
     n = len( pts )
     if n == 0:
         return np.zeros( ( int( sinogram.nb_angles.value ), sinogram.nb_bins_host ) )
@@ -374,21 +374,21 @@ def interior_values( sinogram: Sinogram, points, mass: float, radius: float | No
         pts = pts[ np.random.default_rng( seed ).choice( n, max_points, replace = False ) ]
 
     if radius is not None:
-        # densité d'un disque de densité 1 -> on renormalise pour que chaque disque porte mass/len
+        # density of a disk of density 1 -> we renormalize so that each disk carries mass/len
         vals = np.asarray( DiskProjector( sinogram, radius = radius ).values( pts ) )
         return vals * ( mass / ( len( pts ) * np.pi * radius * radius ) )
 
     nb_angles, nb_bins = len( sinogram.angles ), sinogram.nb_bins_host
     out = np.zeros( nb_angles * nb_bins )
-    per_point = mass / ( len( pts ) * sinogram.dw )                        # densité, pas masse
+    per_point = mass / ( len( pts ) * sinogram.dw )                        # density, not mass
 
-    # tranches d'angles : le tableau des positions projetées fait [ nb_angles, nb_points ], vite
-    # plus gros que tout le reste (600 angles x 5e5 points = 2.4 Go).
+    # angle slices: the array of projected positions is [ nb_angles, nb_points ], quickly
+    # larger than everything else (600 angles x 5e5 points = 2.4 GB).
     chunk = max( 1, int( 2e7 // max( 1, len( pts ) ) ) )
     for k0 in range( 0, nb_angles, chunk ):
         normals = sinogram.normals[ k0 : k0 + chunk ]                      # [ na, 2 ]
         s = normals @ pts.T                                                # [ na, nb_points ]
-        x = ( s - sinogram.s_min ) / sinogram.dw - 0.5                     # en indices de CENTRES
+        x = ( s - sinogram.s_min ) / sinogram.dw - 0.5                     # in CENTER indices
         i0 = np.floor( x ).astype( int )
         w1 = x - i0
         base = ( k0 + np.arange( len( normals ) ) )[ :, None ] * nb_bins
@@ -399,7 +399,7 @@ def interior_values( sinogram: Sinogram, points, mass: float, radius: float | No
     return out.reshape( nb_angles, nb_bins )
 
 
-# -- l'alternance ----------------------------------------------------------
+# -- the alternation -------------------------------------------------------
 
 
 def alternate( sinogram: Sinogram, solve, *, outer_radius: float | None = None,
@@ -408,53 +408,53 @@ def alternate( sinogram: Sinogram, solve, *, outer_radius: float | None = None,
                max_residual_points: int | None = 500_000, verbose: bool = False,
                halo_kwargs: dict | None = None,
                **recon_kwargs ) -> tuple[ Reconstruction, Halo ]:
-    """Alterne estimation du HALO et reconstruction de l'INTÉRIEUR, et renvoie les deux.
+    """Alternates HALO estimation and INTERIOR reconstruction, and returns both.
 
-    « retirer du sinogramme ce qui a été trouvé à l'extérieur » est circulaire pris au pied de la
-    lettre : pour connaître l'extérieur il faut connaître l'intérieur. On alterne donc, en partant
-    d'un halo NUL -- la première reconstruction est la mauvaise (les vides sont bouchés), mais
-    l'intérieur, confiné au champ de vue et de capacité limitée, ne peut pas reproduire un
-    sinogramme angulairement incohérent : ce qu'il laisse au résidu EST la part inexplicable de la
-    donnée, exactement le signal que cherche le halo. Deux ou trois passes suffisent, les deux
-    modèles vivant à des échelles différentes.
+    "Remove from the sinogram what was found outside" is circular taken literally:
+    to know the exterior one must know the interior. We therefore alternate, starting from a ZERO
+    halo -- the first reconstruction is the bad one (the voids are filled), but
+    the interior, confined to the field of view and of limited capacity, cannot reproduce an
+    angularly inconsistent sinogram: what it leaves in the residual IS the unexplainable part of the
+    data, exactly the signal the halo is looking for. Two or three passes are enough, the two
+    models living at different scales.
 
         rec, halo = alternate( sino, lambda r: r.multiscale( 5000 ), outer_radius = 4.0 )
 
-    `solve( rec )` : UNE résolution intérieure complète, partant du nuage courant de `rec` (qui est
-    donc réchauffé d'une passe à l'autre) et sur le sinogramme corrigé du moment. Doit renvoyer
-    `rec` -- typiquement `lambda r: r.multiscale( n )` ou `lambda r: r.diracs().disks( radius )`.
+    `solve( rec )`: ONE complete interior solve, starting from the current cloud of `rec` (which is
+    therefore warm-started from one pass to the next) and on the sinogram corrected at that moment. Must return
+    `rec` -- typically `lambda r: r.multiscale( n )` or `lambda r: r.diracs().disks( radius )`.
 
-    `interior_mass` : la masse à attribuer à l'INTÉRIEUR. Par défaut `min_θ ∫p_θ`, qui est la
-    borne exacte (`∫p_θ = M_in + M_out( θ )` avec `M_out ≥ 0`) -- et le seul choix qui garantisse
-    un résidu de masse positive à tous les angles, donc quelque chose à ajuster pour un halo
-    contraint positif. C'est une borne SUPÉRIEURE, atteinte seulement s'il existe un angle où
-    l'objet tient entièrement dans le détecteur ; sinon le halo est sous-estimé, et c'est le
-    paramètre à baisser. `mass_profile` donne la courbe `∫p_θ` pour en juger, et `void_fraction`
-    le critère : le bon partage est celui qui maximise le vide.
+    `interior_mass`: the mass to attribute to the INTERIOR. By default `min_θ ∫p_θ`, which is the
+    exact bound (`∫p_θ = M_in + M_out( θ )` with `M_out ≥ 0`) -- and the only choice that guarantees
+    a residual of positive mass at all angles, hence something to fit for a
+    positively-constrained halo. It is an UPPER bound, attained only if there is an angle where
+    the object fits entirely in the detector; otherwise the halo is underestimated, and this is the
+    parameter to lower. `mass_profile` gives the `∫p_θ` curve to judge it, and `void_fraction`
+    the criterion: the right split is the one that maximizes the void.
 
-    `radius` : rayon des disques pour la projection du nuage dans le résidu (`None` = diracs). À
-    accorder au modèle que joue `solve`.
+    `radius`: disk radius for the projection of the cloud in the residual (`None` = diracs). To be
+    matched to the model that `solve` plays.
 
-    `nb_points` : tirage initial, pour un `solve` qui ne s'en charge pas lui-même (`multiscale` le
-    fait, `diracs`/`disks` non).
+    `nb_points`: initial draw, for a `solve` that does not take care of it itself (`multiscale` does,
+    `diracs`/`disks` do not).
 
-    `recon_kwargs` -> `Reconstruction`. `extent` y vaut par défaut celle du DÉTECTEUR et non celle
-    de l'objet : l'intérieur doit rester dans le champ de vue, c'est le halo qui porte le reste.
+    `recon_kwargs` -> `Reconstruction`. `extent` there defaults to that of the DETECTOR and not that
+    of the object: the interior must stay in the field of view, the halo carries the rest.
     """
     if halo is None:
         if outer_radius is None:
-            raise ValueError( "fournir `halo`, ou `outer_radius` pour en construire un" )
+            raise ValueError( "provide `halo`, or `outer_radius` to build one" )
         halo = Halo( sinogram, outer_radius = outer_radius, **( halo_kwargs or {} ) )
 
     raw = np.asarray( sinogram.values, dtype = float )
     per_angle = raw.sum( axis = 1 ) * sinogram.dw
     m_in = float( per_angle.min() ) if interior_mass is None else float( interior_mass )
-    target = np.maximum( per_angle - m_in, 0.0 )                           # masse VISIBLE du halo
+    target = np.maximum( per_angle - m_in, 0.0 )                           # VISIBLE mass of the halo
 
     if verbose:
         print( f"[halo] { halo }" )
-        print( f"[halo] masse par angle : min={ per_angle.min():.4g} max={ per_angle.max():.4g} "
-               f"-> M_in={ m_in:.4g}, halo visible <= { target.max():.4g}" )
+        print( f"[halo] mass per angle: min={ per_angle.min():.4g} max={ per_angle.max():.4g} "
+               f"-> M_in={ m_in:.4g}, visible halo <= { target.max():.4g}" )
 
     rec = Reconstruction( sinogram, **recon_kwargs )
     if nb_points is not None:
@@ -470,9 +470,9 @@ def alternate( sinogram: Sinogram, solve, *, outer_radius: float | None = None,
         halo.fit( raw - fwd, target_mass = target )
         if verbose:
             got = halo.visible_mass()
-            print( f"[halo] passe { it }: masse halo { halo.mass():.4g} "
-                   f"(visible { got.min():.4g}..{ got.max():.4g}, cible { target.min():.4g}..{ target.max():.4g}), "
-                   f"{ int( ( halo.weights > 0 ).sum() ) }/{ halo.nb_cells } cellules actives" )
+            print( f"[halo] pass { it }: halo mass { halo.mass():.4g} "
+                   f"(visible { got.min():.4g}..{ got.max():.4g}, target { target.min():.4g}..{ target.max():.4g}), "
+                   f"{ int( ( halo.weights > 0 ).sum() ) }/{ halo.nb_cells } active cells" )
 
     return rec, halo
 
@@ -480,23 +480,23 @@ def alternate( sinogram: Sinogram, solve, *, outer_radius: float | None = None,
 def scan_interior_mass( halo: Halo, points, masses = None, radius: float | None = None,
                         max_points: int | None = 500_000, sinogram: Sinogram | None = None,
                         **fit_kwargs ) -> dict:
-    """Balaie la masse intérieure `M_in` et renvoie, pour chacune, ce que le halo en fait.
+    """Sweeps the interior mass `M_in` and returns, for each, what the halo makes of it.
 
-    `M_in` est le paramètre le moins déterminé du problème (voir `alternate`) : la borne par défaut
-    `min_θ ∫p_θ` n'est atteinte que s'il existe un angle où l'objet tient entièrement dans le
-    détecteur, ce qui est faux dès que la pièce déborde dans TOUTES les directions. Mesuré sur
-    `experiments/halo_demo`, elle surestime alors `M_in` de 50%, et le halo récupère 1.5 de masse
-    au lieu de 6.8 -- alors qu'à la bonne valeur il la retrouve à 0.8% près. C'est de loin la
-    première source d'erreur du module, avant la finesse du maillage.
+    `M_in` is the least determined parameter of the problem (see `alternate`): the default bound
+    `min_θ ∫p_θ` is only attained if there is an angle where the object fits entirely in the
+    detector, which is false as soon as the part overflows in ALL directions. Measured on
+    `experiments/halo_demo`, it then overestimates `M_in` by 50%, and the halo recovers 1.5 of mass
+    instead of 6.8 -- whereas at the right value it recovers it to within 0.8%. This is by far the
+    first source of error of the module, ahead of the fineness of the mesh.
 
-    Le balayage est BON MARCHÉ : la projection de l'intérieur est linéaire en `M_in`, on ne la
-    calcule donc qu'une fois, et chaque point du balayage n'est qu'un NNLS à quelques dizaines
-    d'inconnues. Renvoie un dict de tableaux (`masses`, `halo_mass`, `dispersion`, `nb_active`)
-    -- `dispersion` étant l'écart-type relatif de `∫q_θ` après correction, dont le minimum encadre
-    la bonne valeur (creux peu marqué : à utiliser comme indice, pas comme estimateur).
+    The sweep is CHEAP: the projection of the interior is linear in `M_in`, so it is computed
+    only once, and each point of the sweep is just an NNLS with a few dozen
+    unknowns. Returns a dict of arrays (`masses`, `halo_mass`, `dispersion`, `nb_active`)
+    -- `dispersion` being the relative standard deviation of `∫q_θ` after correction, whose minimum brackets
+    the right value (shallow dip: to be used as a hint, not as an estimator).
 
-    À croiser avec `void_fraction` sur la reconstruction obtenue, qui est le vrai critère : le bon
-    partage est celui qui rend les vides les plus vides.
+    To be cross-checked with `void_fraction` on the resulting reconstruction, which is the true criterion: the right
+    split is the one that makes the voids emptiest.
     """
     sino = sinogram if sinogram is not None else halo.sinogram
     raw = np.asarray( sino.values, dtype = float )
@@ -513,7 +513,7 @@ def scan_interior_mass( halo: Halo, points, masses = None, radius: float | None 
         out[ "halo_mass" ].append( halo.mass() )
         out[ "dispersion" ].append( float( q.std() / max( q.mean(), 1e-30 ) ) )
         out[ "nb_active" ].append( int( ( halo.weights > 0 ).sum() ) )
-    halo.weights = keep                                                    # le balayage n'ajuste rien
+    halo.weights = keep                                                    # the sweep fits nothing
     return dict( masses = masses, **{ k: np.array( v ) for k, v in out.items() } )
 
 
@@ -521,23 +521,23 @@ def scan_interior_mass( halo: Halo, points, masses = None, radius: float | None 
 
 
 def mass_profile( sinogram: Sinogram ) -> np.ndarray:
-    """`∫p_θ` par angle, `[ nb_angles ]` -- la mesure DIRECTE de la fuite.
+    """`∫p_θ` per angle, `[ nb_angles ]` -- the DIRECT measure of the leakage.
 
-    Constante à la précision du bruit = l'objet tient dans le détecteur, rien à corriger. Sa
-    variation est exactement `M_out( θ )`, la masse extérieure vue à l'angle θ.
+    Constant to within the noise precision = the object fits in the detector, nothing to correct. Its
+    variation is exactly `M_out( θ )`, the exterior mass seen at angle θ.
     """
     return np.asarray( sinogram.mass(), dtype = float )
 
 
 def void_fraction( points, extent: float, nb_cells: int | None = None, center = ( 0.0, 0.0 ) ) -> float:
-    """Fraction des cases d'une grille `nb_cells²` (couvrant `extent` autour de `center`) que le
-    nuage laisse VIDES -- le critère qui motive tout ce module.
+    """Fraction of the cells of an `nb_cells²` grid (covering `extent` around `center`) that the
+    cloud leaves EMPTY -- the criterion that motivates this whole module.
 
-    Diagnostic COMPARATIF : à nuage de même taille et même grille, plus il est haut, mieux les
-    vides ont été préservés. Il compte aussi le fond hors objet, et n'a de sens qu'à `nb_cells`
-    ÉGAL -- d'où le défaut `√n` : trop fin, la grille sature (`n` points ne peuvent occuper que
-    `n` cases sur `nb_cells²`, tout nuage y paraît également vide) ; trop grossier, tout est
-    occupé. À `√n` cases de côté, un nuage bien étalé en remplit environ 63%.
+    COMPARATIVE diagnostic: for a cloud of the same size and the same grid, the higher it is, the better the
+    voids have been preserved. It also counts the background outside the object, and only makes sense at
+    EQUAL `nb_cells` -- hence the `√n` default: too fine, the grid saturates (`n` points can only occupy
+    `n` cells out of `nb_cells²`, any cloud looks equally empty); too coarse, everything is
+    occupied. With `√n` cells per side, a well-spread cloud fills about 63%.
     """
     pts = np.asarray( points, dtype = float )
     nb_cells = max( 2, int( np.sqrt( len( pts ) ) ) ) if nb_cells is None else int( nb_cells )

@@ -6,8 +6,6 @@ from .cost import (
     JaxDiracsCost as JaxDiracsCost,
     JaxDisksCost as JaxDisksCost,
     JaxPolygonCost as JaxPolygonCost,
-    SyclDiracsCost as SyclDiracsCost,
-    SyclDisksCost as SyclDisksCost,
     build_cost_model as build_cost_model,
 )
 from .optim import (

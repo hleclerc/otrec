@@ -5,7 +5,7 @@ __pycache__/
 *.egg-info/
 .venv/
 
-# sorties de compilation
+# build outputs
 build/
 *.o
 *.a
@@ -14,13 +14,13 @@ build/
 *.dylib
 compile_commands.json
 
-# les sorties de bancs d'essai ( html, png ) : on garde le code, pas ses resultats
+# benchmark outputs ( html, png ): we keep the code, not its results
 benchmarks/results/
 
-# le runner ( errand )
+# the runner ( errand )
 .errand/
 runs/
 
-# divers
+# misc
 tmp/
 .cache/

@@ -1,23 +1,23 @@
-"""Générateur de RADIOGRAPHIES synthétiques : le pendant 3D de `Sinogram`.
+"""Generator of synthetic RADIOGRAPHS: the 3D counterpart of `Sinogram`.
 
-Un `Radiographs` représente la donnée MESURÉE d'une reconstruction 3D : pour chaque angle, la
-projection 2D ( intégrale le long des rayons, faisceau parallèle ) d'un objet 3D, échantillonnée
-sur un détecteur plan discrétisé. Là où le sinogramme 2D empile des PROFILS 1D, on empile ici des
-IMAGES 2D : `values[ num_angle, num_u, num_v ]`.
+A `Radiographs` represents the MEASURED data of a 3D reconstruction: for each angle, the
+2D projection ( integral along the rays, parallel beam ) of a 3D object, sampled
+on a discretized planar detector. Where the 2D sinogram stacks 1D PROFILES, here we stack 2D
+IMAGES: `values[ num_angle, num_u, num_v ]`.
 
-Usage : on part de zéro et on accumule des primitives dont la projection est connue analytiquement
-( `add_sphere` ). `image( k )` / `batched_image()` présentent les radiographies comme des `Image`
-2D, consommables comme distribution cible d'un `SdotPlanNd` ( le transport semi-discret 2D ).
+Usage: we start from zero and accumulate primitives whose projection is known analytically
+( `add_sphere` ). `image( k )` / `batched_image()` present the radiographs as 2D
+`Image`s, consumable as the target distribution of a `SdotPlanNd` ( the 2D semi-discrete transport ).
 
-Conventions géométriques -- une rotation autour de l'axe `z`, comme un tomographe :
-- angles θ_k = k·π/nb_angles, régulièrement répartis sur [0, π) ;
-- direction de projection ( le rayon ) d_θ = ( cos θ, sin θ, 0 ) ;
-- axes du détecteur u_θ = ( −sin θ, cos θ, 0 ) et v = ( 0, 0, 1 ) ; les coordonnées détecteur
-  d'un point p sont ( u, v ) = ( p·u_θ, p·v ). À θ = 0, `u = y` et `v = z` -- et `Sinogram`, à
-  θ = 0, mesure `s = x` : les deux conventions diffèrent d'un quart de tour, ce qui n'a aucune
-  conséquence ( un angle est un angle ) mais mérite d'être dit ;
-- le détecteur couvre [ center_u − extent_u/2, center_u + extent_u/2 ] × [ idem en v ], découpé
-  en `nb_u × nb_v` pixels de côtés `du`, `dv`.
+Geometric conventions -- a rotation around the `z` axis, like a tomograph:
+- angles θ_k = k·π/nb_angles, regularly spread over [0, π);
+- projection direction ( the ray ) d_θ = ( cos θ, sin θ, 0 );
+- detector axes u_θ = ( −sin θ, cos θ, 0 ) and v = ( 0, 0, 1 ); the detector coordinates
+  of a point p are ( u, v ) = ( p·u_θ, p·v ). At θ = 0, `u = y` and `v = z` -- and `Sinogram`, at
+  θ = 0, measures `s = x`: the two conventions differ by a quarter turn, which has no
+  consequence ( an angle is an angle ) but deserves to be stated;
+- the detector covers [ center_u − extent_u/2, center_u + extent_u/2 ] × [ same in v ], divided
+  into `nb_u × nb_v` pixels of sides `du`, `dv`.
 """
 import numpy as np
 
@@ -36,28 +36,28 @@ class Radiographs( Aggregate ):
 
     values    : RealTensor[ "num_angle", "num_u", "num_v" ]
 
-    #: la dimension de l'espace où vivent les objets ( ce que `Reconstruction` lit pour tirer des
-    #: points de la bonne taille ) -- `Sinogram` vaut 2
+    #: the dimension of the space where the objects live ( what `Reconstruction` reads to draw
+    #: points of the right size ) -- `Sinogram` is 2
     world_dim = 3
 
     def __init__( self, nb_angles: int, nb_u: int, nb_v: int, extent_u: float, extent_v: float | None = None,
                   detector_center = ( 0.0, 0.0 ), quadrature: int = 4 ) -> None:
-        """`nb_u × nb_v` pixels sur `extent_u × extent_v` ( `extent_v = extent_u` par défaut ).
+        """`nb_u × nb_v` pixels over `extent_u × extent_v` ( `extent_v = extent_u` by default ).
 
-        `quadrature` : le nombre de points de Gauss-Legendre PAR AXE avec lesquels `add_sphere`
-        intègre la projection sur chaque pixel ( voir sa docstring ).
+        `quadrature`: the number of Gauss-Legendre points PER AXIS with which `add_sphere`
+        integrates the projection over each pixel ( see its docstring ).
         """
         if nb_angles < 1 or nb_u < 1 or nb_v < 1:
-            raise ValueError( "nb_angles, nb_u et nb_v doivent être >= 1" )
+            raise ValueError( "nb_angles, nb_u and nb_v must be >= 1" )
         extent_v = extent_u if extent_v is None else extent_v
         if extent_u <= 0 or extent_v <= 0:
-            raise ValueError( "extent_u et extent_v doivent être > 0" )
+            raise ValueError( "extent_u and extent_v must be > 0" )
 
-        # géométrie détecteur / angulaire : de la donnée HÔTE, constante pendant toute une
-        # reconstruction ( voir `Sinogram` pour la même remarque )
+        # detector / angular geometry: HOST data, constant throughout a
+        # reconstruction ( see `Sinogram` for the same remark )
         self.extent_u, self.extent_v = float( extent_u ), float( extent_v )
-        #: le côté du plus grand cube centré dont TOUTE projection tient dans le détecteur -- ce
-        #: dans quoi `Reconstruction.random_points` tire ( la diagonale d'une face tourne en `u` )
+        #: the side of the largest centered cube ALL of whose projections fit in the detector -- what
+        #: `Reconstruction.random_points` draws in ( the diagonal of a face rotates in `u` )
         self.extent = min( self.extent_u / np.sqrt( 2 ), self.extent_v )
         self.detector_center = ( float( detector_center[ 0 ] ), float( detector_center[ 1 ] ) )
         self.nb_u_host, self.nb_v_host = int( nb_u ), int( nb_v )
@@ -72,7 +72,7 @@ class Radiographs( Aggregate ):
         c, s = np.cos( angles ), np.sin( angles )
         z = np.zeros_like( angles )
         self.directions = np.stack( [ c, s, z ], axis = 1 )                      # [ nb_angles, 3 ]
-        # la base du détecteur, `[ nb_angles, 2, 3 ]` : la ligne 0 est `u_θ`, la ligne 1 est `v`
+        # the detector basis, `[ nb_angles, 2, 3 ]`: row 0 is `u_θ`, row 1 is `v`
         self.bases = np.stack( [ np.stack( [ -s, c, z ], axis = 1 ),
                                  np.stack( [ z, z, np.ones_like( angles ) ], axis = 1 ) ], axis = 1 )
 
@@ -80,7 +80,7 @@ class Radiographs( Aggregate ):
             values = np.zeros( ( int( nb_angles ), int( nb_u ), int( nb_v ) ), dtype = float ),
         )
 
-    # -- géométrie ---------------------------------------------------------
+    # -- geometry ----------------------------------------------------------
 
     @property
     def u_edges( self ) -> np.ndarray:
@@ -99,34 +99,34 @@ class Radiographs( Aggregate ):
         return self.v_min + self.dv * ( np.arange( self.nb_v_host ) + 0.5 )
 
     def project_points( self, points ) -> np.ndarray:
-        """Coordonnées détecteur `[ nb_angles, n, 2 ]` des `points` ( `[ n, 3 ]` ), pour chaque angle.
+        """Detector coordinates `[ nb_angles, n, 2 ]` of the `points` ( `[ n, 3 ]` ), for each angle.
 
-        Côté HÔTE, en numpy : la reconstruction 3D dérive son coût par le théorème de l'enveloppe
-        ( `models.ProjectedDiracModel` ), pas par autodiff, donc la projection n'a pas besoin d'être
-        tracée. Sa transposée est `unproject_grad`.
+        HOST side, in numpy: the 3D reconstruction derives its cost through the envelope theorem
+        ( `models.ProjectedDiracModel` ), not through autodiff, so the projection does not need to be
+        traced. Its transpose is `unproject_grad`.
         """
         pts = np.asarray( points, dtype = float )
         if pts.ndim != 2 or pts.shape[ 1 ] != 3:
-            raise ValueError( "points doit être de shape [ n, 3 ]" )
+            raise ValueError( "points must have shape [ n, 3 ]" )
         return np.einsum( "kcd,nd->knc", self.bases, pts )
 
     def unproject_grad( self, grad_uv ) -> np.ndarray:
-        """L'adjoint de `project_points` : des cotangentes `[ nb_angles, n, 2 ]` sur les
-        coordonnées détecteur, la cotangente `[ n, 3 ]` sur les points -- la somme sur les angles
-        de `g_k . base_k`."""
+        """The adjoint of `project_points`: from cotangents `[ nb_angles, n, 2 ]` on the
+        detector coordinates, the cotangent `[ n, 3 ]` on the points -- the sum over the angles
+        of `g_k . base_k`."""
         return np.einsum( "knc,kcd->nd", np.asarray( grad_uv, dtype = float ), self.bases )
 
     def visual_hull_points( self, nb_points: int, seed: int = 0, extent: float | None = None,
                             threshold: float = 0.0 ) -> np.ndarray:
-        """`nb_points` points tirés uniformément dans l'ENVELOPPE VISUELLE : le cube
-        `[ -extent/2, extent/2 ]^3` ( `self.extent` par défaut ) réduit aux points dont TOUTES les
-        projections tombent sur un pixel de valeur `> threshold` -- par rejet.
+        """`nb_points` points drawn uniformly in the VISUAL HULL: the cube
+        `[ -extent/2, extent/2 ]^3` ( `self.extent` by default ) reduced to the points ALL of whose
+        projections fall on a pixel of value `> threshold` -- by rejection.
 
-        Le point de départ qu'une reconstruction veut : un dirac dont une projection tombe dans le
-        vide n'a, à cet angle, qu'une cellule de mesure quasi nulle, et le transport qui doit
-        l'amener jusqu'à l'ombre est aussi mal conditionné qu'il est loin ( voir `SdotPlanNd`,
-        le Newton de `SdotPlanNd` ). L'enveloppe visuelle contient l'objet, et c'est déjà lui à peu
-        de choses près quand les angles sont assez nombreux.
+        The starting point a reconstruction wants: a dirac one of whose projections falls in the
+        void has, at that angle, only a cell of almost zero measure, and the transport that must
+        bring it to the shadow is as ill-conditioned as it is far ( see `SdotPlanNd`,
+        the Newton of `SdotPlanNd` ). The visual hull contains the object, and it is already the object
+        more or less when the angles are numerous enough.
         """
         rng = np.random.default_rng( seed )
         e = float( self.extent if extent is None else extent )
@@ -145,37 +145,37 @@ class Radiographs( Aggregate ):
             pts.append( batch[ ok ] )
             tried += len( batch )
             if tried > 200 * nb_points + 1e6:
-                raise ValueError( "visual_hull_points : l'enveloppe visuelle est ( presque ) vide dans ce cube" )
+                raise ValueError( "visual_hull_points: the visual hull is ( almost ) empty in this cube" )
         return np.concatenate( pts )[ :nb_points ]
 
     # -- accumulation ------------------------------------------------------
 
     def add_sphere( self, center, radius: float, density: float = 1.0 ) -> "Radiographs":
-        """Ajoute la projection d'une boule uniforme.
+        """Adds the projection of a uniform ball.
 
-        L'intégrale le long d'un rayon passant à distance ρ de l'axe de la boule est la corde
-        `ρ_m · 2·√(r² − ρ²)` ( nulle hors du disque projeté ), où ρ² = (u − u0)² + (v − v0)² et
-        ( u0, v0 ) le centre projeté. Elle est intégrée sur chaque pixel par une quadrature de
-        Gauss-Legendre ( `quadrature` points par axe -- exacte partout sauf sur les pixels que le
-        bord du disque traverse, où la corde n'est pas polynomiale ), et la valeur stockée est la
-        densité moyenne sur le pixel ( `mass = value · du · dv` ). La masse totale par angle vaut
-        donc `4/3 π r³ ρ_m` aux erreurs de quadrature près, tant que la boule tient dans le
-        détecteur. Ce n'est pas l'intégrale exacte de `Sinogram.add_disk` : en 2D l'intégrale de la
-        corde sur un rectangle n'a pas de forme close commode, et une reconstruction par transport
-        normalise de toute façon chaque angle à la masse 1.
+        The integral along a ray passing at distance ρ from the axis of the ball is the chord
+        `ρ_m · 2·√(r² − ρ²)` ( zero outside the projected disk ), where ρ² = (u − u0)² + (v − v0)² and
+        ( u0, v0 ) the projected center. It is integrated over each pixel by a Gauss-Legendre
+        quadrature ( `quadrature` points per axis -- exact everywhere except on the pixels that the
+        edge of the disk crosses, where the chord is not polynomial ), and the stored value is the
+        mean density over the pixel ( `mass = value · du · dv` ). The total mass per angle is
+        therefore `4/3 π r³ ρ_m` up to quadrature errors, as long as the ball fits in the
+        detector. This is not the exact integral of `Sinogram.add_disk`: in 2D the integral of the
+        chord over a rectangle has no convenient closed form, and a transport-based reconstruction
+        normalizes each angle to mass 1 anyway.
 
-        Retourne self pour permettre le chaînage.
+        Returns self to allow chaining.
         """
         center = np.asarray( center, dtype = float )
         if center.shape != ( 3, ):
-            raise ValueError( "center doit être de shape [ 3 ]" )
+            raise ValueError( "center must have shape [ 3 ]" )
         if radius <= 0:
-            raise ValueError( "radius doit être > 0" )
+            raise ValueError( "radius must be > 0" )
 
         r = float( radius )
         uv0 = self.project_points( center[ None, : ] )[ :, 0, : ]                  # [ nb_angles, 2 ]
 
-        # les noeuds de Gauss-Legendre sur [ 0, 1 ], et leurs poids ( somme 1 )
+        # the Gauss-Legendre nodes on [ 0, 1 ], and their weights ( sum 1 )
         x, w = np.polynomial.legendre.leggauss( self.quadrature )
         x, w = ( x + 1 ) / 2, w / 2
         us = self.u_edges[ :-1, None ] + self.du * x[ None, : ]                   # [ nb_u, q ]
@@ -192,15 +192,15 @@ class Radiographs( Aggregate ):
         return self
 
     def blurred( self, sigma: float ) -> "Radiographs":
-        """Les mêmes radiographies FLOUTÉES d'une gaussienne d'écart-type `sigma` ( en unités
-        monde ), chacune séparément -- un nouveau `Radiographs` de même géométrie.
+        """The same radiographs BLURRED by a Gaussian of standard deviation `sigma` ( in world
+        units ), each separately -- a new `Radiographs` of the same geometry.
 
-        Ce que le flou achète : plus de ZÉROS. Une radiographie de boules est nulle hors de
-        leurs ombres, et un dirac qui y projette n'a ni cellule ni gradient ( voir `SdotPlanNd` ) ;
-        floutée à l'échelle du domaine ( `sigma ~ extent` ), elle est une bosse positive partout,
-        et le transport est doux. Une reconstruction commence là et resserre le flou
-        ( `Reconstruction.anneal_blur` ). Le bord du détecteur est prolongé par zéro : ce qui
-        déborde est perdu, ce qui ne change rien à une cible normalisée par angle.
+        What the blur buys: no more ZEROS. A radiograph of balls is zero outside
+        their shadows, and a dirac that projects there has neither a cell nor a gradient ( see `SdotPlanNd` );
+        blurred at the domain scale ( `sigma ~ extent` ), it is a positive bump everywhere,
+        and the transport is gentle. A reconstruction starts there and tightens the blur
+        ( `Reconstruction.anneal_blur` ). The detector edge is extended by zero: what
+        overflows is lost, which changes nothing for a target normalized per angle.
         """
         from scipy.ndimage import gaussian_filter
         out = Radiographs( nb_angles = len( self.angles ), nb_u = self.nb_u_host, nb_v = self.nb_v_host,
@@ -213,19 +213,19 @@ class Radiographs( Aggregate ):
         out.values = vals
         return out
 
-    # -- consommation ------------------------------------------------------
+    # -- consumption -------------------------------------------------------
 
     def _image_kwargs( self ):
         return dict( origin = [ self.u_min, self.v_min ],
                      frame = [ [ self.du, 0.0 ], [ 0.0, self.dv ] ] )
 
     def image( self, k: int, background: float = 0.0 ) -> Image:
-        """`Image` 2D de la radiographie à l'angle k, en coordonnées détecteur réelles.
+        """2D `Image` of the radiograph at angle k, in real detector coordinates.
 
-        `background` : une densité ajoutée PARTOUT ( en fraction de la valeur moyenne de l'angle )
-        -- ce qu'un transport semi-discret demande pour qu'aucune cellule de Laguerre ne soit de
-        mesure nulle ( un dirac projeté hors de l'ombre de l'objet n'aurait sinon aucun gradient,
-        voir `SdotPlanNd` ). Une radiographie de boules est nulle hors de leurs ombres.
+        `background`: a density added EVERYWHERE ( as a fraction of the mean value of the angle )
+        -- what a semi-discrete transport requires so that no Laguerre cell has zero
+        measure ( a dirac projected outside the shadow of the object would otherwise have no gradient,
+        see `SdotPlanNd` ). A radiograph of balls is zero outside their shadows.
         """
         vals = np.asarray( self.values )[ k ]
         if background:
@@ -233,13 +233,13 @@ class Radiographs( Aggregate ):
         return Image( values = vals, **self._image_kwargs() )
 
     def batched_image( self, background: float = 0.0 ) -> Image:
-        """Toutes les radiographies d'un coup : une `Image` batchée sur `num_angle`."""
+        """All the radiographs at once: an `Image` batched over `num_angle`."""
         vals = np.asarray( self.values )
         if background:
             vals = vals + background * vals.mean( axis = ( 1, 2 ), keepdims = True )
         return Image( values = vals, batch_axes = [ self.num_angle ], **self._image_kwargs() )
 
     def mass( self, k: int | None = None ):
-        """Masse totale ( ∫∫ radiographie du dv ) à l'angle k, ou par angle si k est None."""
+        """Total mass ( ∫∫ radiograph du dv ) at angle k, or per angle if k is None."""
         m = np.asarray( self.values ).sum( axis = ( 1, 2 ) ) * self.du * self.dv
         return m if k is None else m[ k ]

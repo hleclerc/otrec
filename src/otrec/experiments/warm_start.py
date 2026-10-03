@@ -1,8 +1,8 @@
-"""Warm-start : vérifie que le nuage passe bien d'un optimiseur au suivant.
+"""Warm-start: checks that the cloud is properly passed from one optimizer to the next.
 
-C'est la propriété qui rend `Reconstruction` chaînable : chaque étape part EXACTEMENT du nuage
-laissé par la précédente (ici LBFGS puis Adam ; c'est le même mécanisme qui permet d'enchaîner
-diracs -> disques, voir `disks_demo.py --diracs`).
+This is the property that makes `Reconstruction` chainable: each stage starts EXACTLY from the cloud
+left by the previous one (here LBFGS then Adam; it is the same mechanism that allows chaining
+Diracs -> disks, see `disks_demo.py --diracs`).
 """
 
 import numpy as np
@@ -38,7 +38,7 @@ print(f"  loss: {loss_after_lbfgs:.8f}")
 print(f"  first position: {positions_after_lbfgs[0]}")
 print(f"  position change: {np.linalg.norm(positions_after_lbfgs[0] - positions_init[0]):.8f}")
 
-# Phase 2: Adam starting from LBFGS result -- même objet, on enchaîne simplement l'étape
+# Phase 2: Adam starting from LBFGS result -- same object, we simply chain the stage
 print(f"\n=== Phase 2: Adam (warm-start) ===")
 print(f"  Expected initial loss for Adam: {loss_after_lbfgs:.8f}")
 
@@ -72,7 +72,7 @@ if callback_losses:
     for step, l in callback_losses[:5]:
         print(f"  Step {step}: {l:.8f}")
 
-# l'historique de `Reconstruction` dit la même chose, une ligne par étape
+# the `Reconstruction` history says the same thing, one line per stage
 print(f"\n{rec.summary()}")
 
 # Check if positions actually changed

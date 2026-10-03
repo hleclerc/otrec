@@ -1,14 +1,15 @@
-"""Le MAILLAGE gradué (`mesh.py`) : le pavage, l'opérateur, puis le partage de masse.
+"""The graded MESH (`mesh.py`): the tiling, the operator, then the mass split.
 
-Les trois premiers tests portent sur des propriétés EXACTES (pavage, masse projetée, adjoint) et
-sont serrés en conséquence ; le dernier juge ce à quoi sert vraiment l'étape -- retrouver la part
-de masse qui est hors du champ de vue.
+The first three tests concern EXACT properties (tiling, projected mass, adjoint) and are tight
+accordingly; the last one judges what the step is really for -- recovering the share of mass that
+is outside the field of view.
 """
 import numpy as np
 
 from otrec.mesh import GradedMesh, scan_exterior_scale
 from otrec.Sinogram import Sinogram
 from errand import test
+from loom.testing import need
 
 
 def _sino( nb_angles = 24, nb_bins = 512, extent = 10.0 ):
@@ -16,11 +17,11 @@ def _sino( nb_angles = 24, nb_bins = 512, extent = 10.0 ):
 
 
 if test( "mesh_is_an_exact_tiling" ):
-    # ni trou ni recouvrement : chaque case de la grille fine doit appartenir à exactement UNE
-    # cellule. C'est la propriété dont tout le reste dépend -- un plan compté deux fois fausserait
-    # le partage de masse, qui est le but de l'étape.
+    # no hole and no overlap: each bin of the fine grid must belong to exactly ONE
+    # cell. This is the property everything else depends on -- a plane counted twice would skew
+    # the mass split, which is the goal of the step.
     mesh = GradedMesh( _sino(), outer_radius = 6.0, inner_radius = 2.0, cell_size = 0.125 )
-    assert mesh.nb_levels > 1, "le maillage doit vraiment être gradué pour que le test ait un sens"
+    assert mesh.nb_levels > 1, "the mesh must really be graded for the test to make sense"
 
     h, r = mesh.cell_size, mesh.outer_radius
     k = ( np.arange( -int( 2 * r / h ), int( 2 * r / h ) ) + 0.5 ) * h
@@ -32,13 +33,13 @@ if test( "mesh_is_an_exact_tiling" ):
     for ( cx, cy ), s in zip( mesh.centers, mesh.sizes ):
         count += ( np.abs( fx - cx ) < s / 2 ) & ( np.abs( fy - cy ) < s / 2 )
     assert count.min() == 1 and count.max() == 1, (
-        f"couverture par case fine : { count.min() }..{ count.max() } (attendu exactement 1)" )
+        f"coverage per fine bin: { count.min() }..{ count.max() } (expected exactly 1)" )
     assert np.isclose( mesh.areas.sum(), len( fx ) * h * h, rtol = 1e-12 )
 
 
 if test( "mesh_projects_a_disk_exactly" ):
-    # la projection d'un disque pavé de cellules doit avoir la MASSE de ce pavage, à tous les
-    # angles -- c'est ce qui valide le trapèze analytique et le dépôt linéaire.
+    # the projection of a disk tiled with cells must have the MASS of this tiling, at all
+    # angles -- this is what validates the analytic trapezoid and the linear deposit.
     sino = _sino()
     sino.add_disk( center = [ 0.0, 0.0 ], radius = 3.0 )
     mesh = GradedMesh( sino, outer_radius = 5.0, inner_radius = 3.0, cell_size = 0.1 )
@@ -48,36 +49,36 @@ if test( "mesh_projects_a_disk_exactly" ):
     got = mesh.project( w )
     mass = got.sum( axis = 1 ) * mesh.coarse_dw
     assert np.allclose( mass, mesh.areas[ inside ].sum(), rtol = 1e-9 ), (
-        f"masse projetée { mass.min() }..{ mass.max() } != aire { mesh.areas[ inside ].sum() }" )
+        f"projected mass { mass.min() }..{ mass.max() } != area { mesh.areas[ inside ].sum() }" )
 
-    # ... et la forme doit suivre la projection analytique du disque, à l'escalier du pavage près
+    # ... and the shape must follow the analytic projection of the disk, up to the staircase of the tiling
     exp = np.asarray( sino.values ).reshape( mesh.nb_angles, mesh.nb_coarse, mesh.group ).mean( axis = 2 )
     assert np.abs( got - exp ).max() / exp.max() < 0.10
 
 
 if test( "mesh_adjoint_is_exact" ):
-    # `backproject` doit être l'adjoint EXACT de `project` (trapèze symétrique + dépôt matriciel),
-    # sans quoi le solveur ne converge pas vers le bon point.
+    # `backproject` must be the EXACT adjoint of `project` (symmetric trapezoid + matrix deposit),
+    # otherwise the solver does not converge to the right point.
     mesh = GradedMesh( _sino(), outer_radius = 6.0, inner_radius = 2.0, cell_size = 0.2 )
     rng = np.random.default_rng( 0 )
     a = rng.random( mesh.nb_cells )
     b = rng.random( ( mesh.nb_angles, mesh.nb_coarse ) )
     lhs, rhs = float( ( mesh.project( a ) * b ).sum() ), float( a @ mesh.backproject( b ) )
-    assert abs( lhs - rhs ) <= 1e-9 * abs( rhs ), f"adjoint faux : { lhs } != { rhs }"
+    assert abs( lhs - rhs ) <= 1e-9 * abs( rhs ), f"wrong adjoint: { lhs } != { rhs }"
 
 
 if test( "mesh_trapezoid_conserves_area" ):
-    # le noyau de convolution est la projection d'un carré : sa masse vaut l'aire, à tout angle.
+    # the convolution kernel is the projection of a square: its mass equals the area, at any angle.
     mesh = GradedMesh( _sino( nb_angles = 16 ), outer_radius = 3.0, inner_radius = 2.0, cell_size = 0.5 )
     for h in ( 0.3, 0.5, 1.1 ):
         k = mesh._trapezoid( h )
         assert np.allclose( k.sum( axis = 1 ) * mesh.coarse_dw, h * h, rtol = 1e-9 ), (
-            f"masse du trapèze != h² pour h={ h }" )
+            f"trapezoid mass != h² for h={ h }" )
 
 
 if test( "mesh_solve_splits_inside_from_outside" ):
-    # ce à quoi sert l'étape : un objet plus large que le détecteur, dont on veut savoir quelle
-    # part de masse est DANS le champ de vue -- la quantité que `halo.alternate` devait deviner.
+    # what the step is for: an object wider than the detector, for which we want to know what
+    # share of mass is INSIDE the field of view -- the quantity that `halo.alternate` had to guess.
     extent, fov = 4.0, 2.0
     sino = Sinogram( nb_angles = 120, nb_bins = 400, extent = extent )
     sino.add_disk( center = [ 0.0, 0.0 ], radius = 1.5 )
@@ -91,27 +92,28 @@ if test( "mesh_solve_splits_inside_from_outside" ):
     true_outside = 4 * np.pi * 0.6 ** 2 * 0.5
 
     mesh = GradedMesh( sino, outer_radius = 4.0, cell_size = 0.08, nb_coarse_bins = 200 )
-    mesh.solve( smooth = 3e-2 )                    # L2 + gradient conjugué, le défaut
+    mesh.solve( smooth = 3e-2 )                    # L2 + conjugate gradient, the default
 
     got_in = mesh.interior_mass()
     got_out = mesh.mass() - got_in
     assert abs( got_in / true_inside - 1 ) < 0.10, (
-        f"masse intérieure { got_in:.3f} pour { true_inside:.3f} attendue" )
+        f"interior mass { got_in:.3f} for { true_inside:.3f} expected" )
     assert abs( got_out / true_outside - 1 ) < 0.25, (
-        f"masse extérieure { got_out:.3f} pour { true_outside:.3f} attendue" )
+        f"exterior mass { got_out:.3f} for { true_outside:.3f} expected" )
 
-    # et le sinogramme corrigé doit avoir une masse par angle bien plus constante
+    # and the corrected sinogram must have a much more constant mass per angle
     raw = np.asarray( sino.mass() )
     cor = np.asarray( mesh.corrected().mass() )
     assert cor.std() / cor.mean() < raw.std() / raw.mean() / 4, (
-        f"masse par angle pas assez égalisée : { raw.std() / raw.mean():.4f} -> "
+        f"mass per angle not equalized enough: { raw.std() / raw.mean():.4f} -> "
         f"{ cor.std() / cor.mean():.4f}" )
 
 
 if test( "scan_exterior_scale_is_coherent" ):
-    # `alpha` est le degré de liberté qui reste ouvert après la résolution sur maillage : plus on
-    # retire d'extérieur, moins il reste de masse à l'intérieur, et plus l'écrêtage à 0 mord. Le
-    # balayage doit au moins respecter ça -- il ne PRÉTEND pas trouver le bon `alpha`, voir
+    need( "grad" )
+    # `alpha` is the degree of freedom that remains open after solving on the mesh: the more
+    # exterior is removed, the less mass remains inside, and the more the clipping at 0 bites. The
+    # scan must at least respect that -- it does NOT CLAIM to find the right `alpha`, see
     # `scan_exterior_scale`.
     sino = Sinogram( nb_angles = 60, nb_bins = 200, extent = 4.0 )
     sino.add_disk( center = [ 0.0, 0.0 ], radius = 1.5 )
@@ -126,7 +128,7 @@ if test( "scan_exterior_scale_is_coherent" ):
         alphas = [ 0.0, 0.6, 1.2 ] )
 
     assert np.all( np.diff( scan[ "interior_mass" ] ) < 0 ), (
-        f"masse intérieure non décroissante en alpha : { scan[ 'interior_mass' ] }" )
+        f"interior mass not decreasing in alpha: { scan[ 'interior_mass' ] }" )
     assert np.all( np.diff( scan[ "clipped" ] ) >= 0 ), (
-        f"écrêtage non croissant en alpha : { scan[ 'clipped' ] }" )
+        f"clipping not increasing in alpha: { scan[ 'clipped' ] }" )
     assert len( scan[ "clouds" ] ) == 3 and all( c.shape[ 1 ] == 2 for c in scan[ "clouds" ] )

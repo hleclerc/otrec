@@ -16,8 +16,8 @@ def test_convergence(sinogram: Sinogram, nb_diracs: int = 50, seed: int = 0):
         dict with convergence metrics for each optimizer
     """
     print(f"Testing convergence with {nb_diracs} diracs...")
-    # un même nuage de départ, puis une `Reconstruction` par optimiseur (elles sont indépendantes :
-    # chacune porte son propre nuage courant)
+    # one common starting cloud, then one `Reconstruction` per optimizer (they are independent:
+    # each carries its own current cloud)
     positions_init = Reconstruction(sinogram, extent=1.0).random_points(nb_diracs, seed=seed).points
     initial_loss = Reconstruction(sinogram, positions_init).loss()
 

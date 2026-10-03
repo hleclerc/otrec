@@ -152,9 +152,9 @@ LBFGS(max_iter=200, ftol=1e-8)
 ```
 applications/reconstruction/
 ├── optimizers.py          # Core optimizer implementations
-├── Reconstruction.py      # Point d'entrée unique (étapes chaînables)
-├── models.py              # DiracModel / DiskModel (le coût comparé au sinogramme)
-├── disks.py               # DiskProjector (projection différentiable des disques)
+├── Reconstruction.py      # Single entry point (chainable steps)
+├── models.py              # DiracModel / DiskModel (the cost compared to the sinogram)
+├── disks.py               # DiskProjector (differentiable projection of the disks)
 ├── Sinogram.py            # Sinogram model
 ├── convergence.py         # Convergence comparison util
 ├── tests/                 # Harness tests (test_reconstruction.py, test_sinogram.py)
@@ -168,7 +168,7 @@ applications/reconstruction/
 
 ### Run Tests
 ```bash
-make test T=reconstruction        # (env activé) — ou: make -f .private/Makefile test T=reconstruction
+make test T=reconstruction        # (env activated) — or: make -f .private/Makefile test T=reconstruction
 ```
 
 ### Run Custom Benchmark

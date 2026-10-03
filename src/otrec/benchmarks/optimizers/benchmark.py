@@ -32,7 +32,7 @@ def benchmark_optimizers(
     sino = Sinogram(nb_angles=nb_angles, nb_bins=nb_bins, extent=extent)
     sino.add_disk(center=[0.3, -0.2], radius=1.0)
 
-    # Initial positions -- partagées par tous les optimiseurs (chacun repart du MÊME nuage)
+    # Initial positions -- shared by all optimizers (each restarts from the SAME cloud)
     positions_init = Reconstruction(sino, extent=extent).random_points(nb_diracs, seed=seed).points
     initial_loss = Reconstruction(sino, positions_init).loss()
 
@@ -280,7 +280,7 @@ if __name__ == "__main__":
     ]
 
     results_list = []
-    # sorties à côté de ce script (applications/reconstruction/benchmarks/results/), pas dans le CWD
+    # outputs next to this script (applications/reconstruction/benchmarks/results/), not in the CWD
     output_dir = Path(__file__).parent / "results"
     output_dir.mkdir(exist_ok=True)
 

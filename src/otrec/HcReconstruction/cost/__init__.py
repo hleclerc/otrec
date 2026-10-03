@@ -5,4 +5,3 @@ from .jax_cost import (
     JaxDisksCost as JaxDisksCost,
     JaxPolygonCost as JaxPolygonCost,
 )
-from .sycl_cost import SyclDiracsCost as SyclDiracsCost, SyclDisksCost as SyclDisksCost

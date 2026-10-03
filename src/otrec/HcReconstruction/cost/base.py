@@ -1,4 +1,4 @@
-"""The `CostModel` contract every OT backend/model combination implements."""
+"""The `CostModel` contract every OT model implements."""
 from abc import ABC, abstractmethod
 
 import numpy as np
@@ -7,9 +7,8 @@ import numpy as np
 class CostModel(ABC):
     """OT cost(+gradient) of a point cloud against one `Sinogram`.
 
-    Concrete subclasses (`cost.jax_cost.JaxDiracsCost`/`JaxDisksCost`,
-    `cost.sycl_cost.SyclDiracsCost`/`SyclDisksCost`) each own exactly one
-    (backend, model) combination and are independently constructible from a
+    Concrete subclasses (`cost.jax_cost.JaxDiracsCost`/`JaxDisksCost`/`JaxPolygonCost`)
+    each own exactly one model and are independently constructible from a
     `Sinogram` alone — `cost.factory.build_cost_model` just picks the right
     one. Every concrete subclass stores the `Sinogram` it was built from as
     `self.sinogram`.

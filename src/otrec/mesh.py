@@ -1,43 +1,42 @@
-"""Reconstruction sur un MAILLAGE gradué couvrant tout l'objet, détecteur compris et débordé.
+"""Reconstruction on a graded MESH covering the whole object, detector included and overflowed.
 
-C'est l'étape qui précède les diracs quand la pièce est plus large que le détecteur. Le
-raisonnement, en trois temps :
+This is the step that precedes the diracs when the part is wider than the detector. The
+reasoning, in three stages:
 
-1. on résout d'abord TOUT sur un maillage -- l'intérieur du champ de vue en cellules fines,
-   l'extérieur en cellules de plus en plus grosses. Problème CONVEXE, donc pas de minimum local,
-   pas d'initialisation à soigner ;
-2. le maillage donne alors le partage intérieur/extérieur de la masse, qui n'était PAS accessible
-   autrement. C'est ce qui règle le point dur de `halo.py` : là-bas `M_in` devait être deviné
-   (borné par `min_θ ∫p_θ`, borne fausse de 50% dès qu'aucun angle ne voit l'objet entier), ici il
-   se lit sur la solution ;
-3. on RETIRE du sinogramme la contribution des cellules EXTÉRIEURES, et on rend l'intérieur aux
-   diracs/disques, dont c'est le métier -- eux seuls savent laisser des vides. Le maillage, lui,
-   est trop lisse pour ça : c'est un estimateur de fond, pas de structure.
+1. we first solve EVERYTHING on a mesh -- the interior of the field of view in fine cells,
+   the exterior in coarser and coarser cells. A CONVEX problem, so no local minimum,
+   no initialization to take care of;
+2. the mesh then gives the interior/exterior split of the mass, which was NOT accessible
+   otherwise. This settles the hard point of `halo.py`: there `M_in` had to be guessed
+   (bounded by `min_θ ∫p_θ`, a bound that is off by 50% as soon as no angle sees the whole object), here it
+   is read off the solution;
+3. we REMOVE from the sinogram the contribution of the EXTERIOR cells, and hand the interior back to the
+   diracs/disks, which is their job -- only they know how to leave voids. The mesh
+   is too smooth for that: it is a background estimator, not a structure estimator.
 
-La graduation vient de la géométrie d'acquisition : un point de rayon r n'est vu que sur la
-fenêtre angulaire `2·arcsin( S/r )`, donc l'information disponible s'effondre en s'éloignant. Des
-cellules fines là-bas ne feraient qu'absorber du signal intérieur, et la régularisation prend le
-relais.
+The grading comes from the acquisition geometry: a point of radius r is only seen over the
+angular window `2·arcsin( S/r )`, so the available information collapses with distance. Fine
+cells out there would only absorb interior signal, and the regularization takes over.
 
-Elle est QUADRATIQUE par défaut (voir `solve`), donc le problème reste LINÉAIRE et se résout par
-gradient conjugué. C'est le bon compromis ici parce que le maillage n'a pas à résoudre les détails
-intérieurs -- c'est le métier des diracs : il doit livrer l'empreinte extérieure et le partage de
-masse, deux quantités lisses. La variation totale reste disponible, et donne une carte plus propre
-au bord du champ de vue, mais rend le problème non linéaire pour huit fois le temps de calcul.
+It is QUADRATIC by default (see `solve`), so the problem stays LINEAR and is solved by
+conjugate gradient. This is the right compromise here because the mesh does not have to resolve the interior
+details -- that is the diracs' job: it must deliver the exterior footprint and the mass
+split, two smooth quantities. Total variation remains available, and gives a cleaner map
+at the edge of the field of view, but makes the problem nonlinear for eight times the computation time.
 
-== Comment l'opérateur est calculé (et pourquoi il n'y a pas de matrice)
+== How the operator is computed (and why there is no matrix)
 
-Toutes les cellules sont des CARRÉS, seule leur taille change. Or la projection d'un carré de côté
-h est un trapèze analytique qui ne dépend que de `( h, θ )` -- pas de la position, qui ne fait que
-le DÉCALER. La projection d'un niveau de maillage est donc :
+All cells are SQUARES, only their size changes. Now the projection of a square of side
+h is an analytic trapezoid that only depends on `( h, θ )` -- not on the position, which merely
+SHIFTS it. The projection of a mesh level is therefore:
 
-    projeter = déposer les poids aux positions projetées des centres, puis CONVOLUER par le trapèze
+    project = deposit the weights at the projected positions of the centers, then CONVOLVE by the trapezoid
 
-Le dépôt est une matrice creuse fixe (deux cases par cellule et par angle, dépôt linéaire), la
-convolution une FFT par angle avec un noyau précalculé. Aucune matrice système : la mémoire est en
-`O( nb_cellules x nb_angles )` au lieu de `O( nb_cellules x nb_angles x nb_cases )`. Le trapèze
-étant SYMÉTRIQUE, la convolution est auto-adjointe et l'adjoint de l'opérateur complet est
-exactement le dépôt transposé -- pas d'adjoint approché, donc un solveur qui converge vraiment.
+The deposit is a fixed sparse matrix (two bins per cell and per angle, linear deposit), the
+convolution an FFT per angle with a precomputed kernel. No system matrix: memory is
+`O( nb_cells x nb_angles )` instead of `O( nb_cells x nb_angles x nb_bins )`. The trapezoid
+being SYMMETRIC, the convolution is self-adjoint and the adjoint of the full operator is
+exactly the transposed deposit -- no approximate adjoint, hence a solver that truly converges.
 """
 import numpy as np
 import scipy.sparse as sp
@@ -49,35 +48,35 @@ from .Sinogram import Sinogram
 
 def scan_exterior_scale( mesh, solve, alphas = None, *, sinogram: Sinogram | None = None,
                          metrics = None, verbose: bool = False, **recon_kwargs ) -> dict:
-    """Balaie `alpha`, le facteur appliqué à l'empreinte extérieure avant soustraction, et
-    reconstruit en diracs pour chacun.
+    """Sweeps `alpha`, the factor applied to the exterior footprint before subtraction, and
+    reconstructs with diracs for each.
 
-    Pourquoi un balayage plutôt qu'un calcul : le noyau du problème intérieur autorise à déplacer
-    un niveau lentement variable entre le dedans et le dehors, et rien dans les données ne dit
-    lequel choisir -- c'est la définition d'un noyau. Toute régularisation en choisit un, et on a
-    mesuré (voir `solve`) que ce choix vaut environ 10% de la masse intérieure. Plutôt que de le
-    cacher dans un poids de régularisation, on l'expose comme UN scalaire, qu'on peut confronter à
-    ce dont on dispose par ailleurs.
+    Why a sweep rather than a computation: the kernel of the interior problem allows moving
+    a slowly varying level between the inside and the outside, and nothing in the data says
+    which one to choose -- that is the definition of a kernel. Any regularization picks one, and we have
+    measured (see `solve`) that this choice is worth about 10% of the interior mass. Rather than
+    hiding it in a regularization weight, we expose it as ONE scalar, which can be confronted with
+    what we have available elsewhere.
 
-    `solve( rec )` : une résolution intérieure complète, comme pour `halo.alternate`.
-    `metrics` : `{ nom: f( positions ) -> float }` en plus de ceux calculés d'office
-    (`void_fraction`, la masse restante par angle, et `clipped_fraction`, qui dit à partir de quel
-    `alpha` la soustraction devient physiquement impossible).
+    `solve( rec )`: one complete interior solve, as for `halo.alternate`.
+    `metrics`: `{ name: f( positions ) -> float }` in addition to those computed by default
+    (`void_fraction`, the remaining mass per angle, and `clipped_fraction`, which tells from which
+    `alpha` the subtraction becomes physically impossible).
 
-    Renvoie un dict de tableaux plus `clouds`, la liste des nuages obtenus.
+    Returns a dict of arrays plus `clouds`, the list of the clouds obtained.
 
-    MESURÉ, et c'est une mise en garde : sur `experiments/lung_mesh`, l'optimum vrai est net
-    (erreur de densité minimale à α = 0.90, là où la masse intérieure retombe sur 1225 pour 1226)
-    mais AUCUN indicateur observable ne le trouve. Le vide croît de façon monotone (33% à 43% entre
-    α = 0.9 et 1.1), l'écrêtage reste nul jusqu'à α = 1, et le résidu OT ne fait que croître. C'est
-    la définition même d'un noyau : rien dans les données ne distingue ces solutions. Ce balayage
-    sert donc à EXPLOITER un ancrage extérieur (densité matériau connue, support plus serré,
-    quelques vues grand champ), pas à s'en passer. Consolation : l'erreur est plate autour de
-    l'optimum -- 0.450 à α = 0.90 contre 0.471 à α = 1 --, donc le défaut α = 1 reste raisonnable.
-    Seul le résidu OT montre une amorce de coude vers l'optimum ; à confronter à d'autres cas
-    avant d'en faire un critère.
+    MEASURED, and this is a warning: on `experiments/lung_mesh`, the true optimum is clear
+    (minimal density error at α = 0.90, where the interior mass falls back to 1225 versus 1226)
+    but NO observable indicator finds it. The void grows monotonically (33% to 43% between
+    α = 0.9 and 1.1), the clipping stays zero up to α = 1, and the OT residual only grows. This is
+    the very definition of a kernel: nothing in the data distinguishes these solutions. This sweep
+    therefore serves to EXPLOIT an exterior anchor (known material density, tighter support,
+    a few wide-field views), not to do without one. Consolation: the error is flat around
+    the optimum -- 0.450 at α = 0.90 against 0.471 at α = 1 --, so the default α = 1 remains reasonable.
+    Only the OT residual shows the beginnings of an elbow towards the optimum; to be confronted with other cases
+    before making it a criterion.
     """
-    from .halo import void_fraction                    # tardif : `halo` tire `Reconstruction`
+    from .halo import void_fraction                    # late: `halo` pulls in `Reconstruction`
     from .Reconstruction import Reconstruction
 
     sino = sinogram if sinogram is not None else mesh.sinogram
@@ -102,39 +101,39 @@ def scan_exterior_scale( mesh, solve, alphas = None, *, sinogram: Sinogram | Non
             out[ name ].append( float( fn( pos ) ) )
         if verbose:
             extra = "".join( f"  { n } { out[ n ][ -1 ]:.4f}" for n in ( metrics or {} ) )
-            print( f"[alpha] { a:.3f}: masse intérieure { out[ 'interior_mass' ][ -1 ]:8.1f}  "
-                   f"vide { out[ 'void' ][ -1 ]:.1%}  écrêté { out[ 'clipped' ][ -1 ]:.2%}{ extra }" )
+            print( f"[alpha] { a:.3f}: interior mass { out[ 'interior_mass' ][ -1 ]:8.1f}  "
+                   f"void { out[ 'void' ][ -1 ]:.1%}  clipped { out[ 'clipped' ][ -1 ]:.2%}{ extra }" )
 
     return dict( alphas = alphas, clouds = clouds,
                  **{ k: np.array( v ) for k, v in out.items() } )
 
 
 class GradedMesh:
-    """Maillage de carrés couvrant le disque de rayon `outer_radius`, fin dedans, gradué dehors.
+    """Mesh of squares covering the disk of radius `outer_radius`, fine inside, graded outside.
 
-    - `inner_radius` (défaut `extent/2`) : le champ de vue. Les cellules y sont toutes de taille
-      `cell_size` -- ce sont elles qu'on remplacera par des diracs (`interior`) ;
-    - au-delà, la taille double à chaque niveau, le niveau visé en `r` valant
-      `floor( grading · log2( r / inner_radius ) )`. `grading = 2` (défaut) suit la géométrie
-      d'acquisition : un point de rayon `r` n'étant vu que sur `2·arcsin( S/r )` de l'acquisition,
-      le nombre de mesures qui touchent l'anneau de rayon `r` décroît en `1/r` pendant que sa
-      circonférence croît en `r` -- la maille doit croître au moins comme `r²` ;
-    - `cell_size` (défaut 4 cases grossières) : la finesse INTÉRIEURE, qui fixe seule le coût. La
-      descendre en dessous de la résolution détecteur n'apporte rien -- c'est elle qui borne ce
-      que le maillage peut voir.
+    - `inner_radius` (default `extent/2`): the field of view. The cells there are all of size
+      `cell_size` -- these are the ones that will be replaced by diracs (`interior`);
+    - beyond, the size doubles at each level, the target level at `r` being
+      `floor( grading · log2( r / inner_radius ) )`. `grading = 2` (default) follows the acquisition
+      geometry: a point of radius `r` being seen over only `2·arcsin( S/r )` of the acquisition,
+      the number of measurements touching the ring of radius `r` decreases as `1/r` while its
+      circumference grows as `r` -- the mesh size must grow at least like `r²`;
+    - `cell_size` (default 4 coarse bins): the INTERIOR fineness, which alone sets the cost.
+      Going below the detector resolution brings nothing -- it is what bounds
+      what the mesh can see.
 
-    Le maillage est un QUADTREE construit par fusion depuis la grille fine : une cellule de niveau
-    `L` n'est émise que si les `4^L` cellules fines qu'elle recouvre visent toutes au moins ce
-    niveau et sont encore libres. C'est ce qui garantit un vrai PAVAGE -- ni trou ni recouvrement
-    aux interfaces, alors qu'une construction par anneaux indépendants en produit forcément (les
-    grilles n'y sont pas emboîtées, et la frontière est un cercle). Un opérateur qui compterait
-    deux fois une partie du plan fausserait tout le partage de masse, qui est le but de l'étape.
+    The mesh is a QUADTREE built by merging from the fine grid: a cell of level
+    `L` is only emitted if the `4^L` fine cells it covers all target at least that
+    level and are still free. This is what guarantees a true TILING -- no gap or overlap
+    at the interfaces, whereas a construction by independent rings necessarily produces them (the
+    grids are not nested there, and the boundary is a circle). An operator that counted
+    part of the plane twice would distort the whole mass split, which is the goal of this step.
 
-    `nb_coarse_bins` : le maillage travaille sur une grille détecteur regroupée (diviseur exact de
-    `nb_bins`). Inutile d'y mettre la pleine résolution : les diracs, eux, la reprendront ensuite
-    sur le sinogramme corrigé.
+    `nb_coarse_bins`: the mesh works on a grouped detector grid (exact divisor of
+    `nb_bins`). No point in putting the full resolution there: the diracs will pick it up afterwards
+    on the corrected sinogram.
 
-    `weights` (une densité par cellule) démarre à 0 ; `solve` le remplit.
+    `weights` (one density per cell) starts at 0; `solve` fills it.
     """
 
     def __init__( self, sinogram: Sinogram, outer_radius: float, *, inner_radius: float | None = None,
@@ -144,7 +143,7 @@ class GradedMesh:
         self.inner_radius = float( inner_radius if inner_radius is not None else sinogram.extent / 2 )
         self.outer_radius = max( float( outer_radius ), self.inner_radius )
         if grading < 0:
-            raise ValueError( "grading doit être >= 0" )
+            raise ValueError( "grading must be >= 0" )
 
         self.angles = np.asarray( sinogram.angles, dtype = float )
         self.normals = np.asarray( sinogram.normals, dtype = float )
@@ -160,23 +159,23 @@ class GradedMesh:
         self.cell_size = float( cell_size if cell_size is not None else 4 * self.coarse_dw )
         self.centers, self.sizes, self.levels = self._build_cells( grading, max_level )
         self.areas = self.sizes ** 2
-        #: masque des cellules du CHAMP DE VUE -- celles que les diracs remplaceront. Défini par le
-        #: rayon du centre, pas par le niveau : une cellule peut rester fine hors du champ (bloc de
-        #: fusion incomplet), ce qui n'en fait pas une cellule intérieure.
+        #: mask of the FIELD OF VIEW cells -- those the diracs will replace. Defined by the
+        #: radius of the center, not by the level: a cell may remain fine outside the field (incomplete
+        #: merge block), which does not make it an interior cell.
         self.interior = np.linalg.norm( self.centers, axis = 1 ) < self.inner_radius
         self.weights = np.zeros( self.nb_cells )
 
-        #: les niveaux réellement peuplés (la fusion peut en sauter un), et leurs masques
+        #: the levels actually populated (the merge may skip one), and their masks
         self._present = [ ( lv, self.levels == lv ) for lv in np.unique( self.levels ) ]
-        self._scatter = self._build_scatter()          # une matrice creuse par niveau présent
-        self._kernels = self._build_kernels()          # une FFT de trapèze par niveau
-        self._edges = None                             # graphe de la variation totale, à la demande
+        self._scatter = self._build_scatter()          # one sparse matrix per present level
+        self._kernels = self._build_kernels()          # one trapezoid FFT per level
+        self._edges = None                             # total variation graph, on demand
 
     def __repr__( self ) -> str:
         per_level = np.bincount( self.levels )
-        return ( f"GradedMesh( { self.nb_cells } cellules { list( per_level ) } par niveau, "
-                 f"maille { self.cell_size:.3g}, r { self.inner_radius:.3g}..{ self.outer_radius:.3g}, "
-                 f"{ self.nb_coarse } cases )" )
+        return ( f"GradedMesh( { self.nb_cells } cells { list( per_level ) } per level, "
+                 f"size { self.cell_size:.3g}, r { self.inner_radius:.3g}..{ self.outer_radius:.3g}, "
+                 f"{ self.nb_coarse } bins )" )
 
     @property
     def nb_cells( self ) -> int:
@@ -186,7 +185,7 @@ class GradedMesh:
     def nb_levels( self ) -> int:
         return int( self.levels.max() ) + 1
 
-    # -- géométrie ---------------------------------------------------------
+    # -- geometry ----------------------------------------------------------
 
     def _group_size( self, nb_coarse_bins: int ) -> int:
         target = max( 1, int( np.ceil( self.nb_bins / max( 1, int( nb_coarse_bins ) ) ) ) )
@@ -196,17 +195,17 @@ class GradedMesh:
         return self.nb_bins
 
     def _build_cells( self, grading, max_level ):
-        """Le quadtree, par FUSION depuis la grille fine (cf. la docstring de la classe).
+        """The quadtree, by MERGING from the fine grid (cf. the class docstring).
 
-        On part de la grille de pas `cell_size` couvrant le disque, on donne à chaque case un
-        niveau VISÉ (croissant avec le rayon), puis on descend les niveaux du plus grossier au plus
-        fin : un bloc `2^L x 2^L` aligné sur la grille n'est fusionné que s'il est entièrement dans
-        le domaine, entièrement libre, et que toutes ses cases visent au moins `L`. Ce qui reste à
-        `L = 0` est émis tel quel, donc chaque case fine appartient à exactement une cellule.
+        We start from the grid of step `cell_size` covering the disk, give each cell a
+        TARGET level (increasing with the radius), then go down the levels from coarsest to
+        finest: a `2^L x 2^L` block aligned on the grid is only merged if it is entirely in
+        the domain, entirely free, and all its cells target at least `L`. What remains at
+        `L = 0` is emitted as is, so each fine cell belongs to exactly one cell.
         """
         h = self.cell_size
-        # la demi-largeur en cases fines est arrondie à un multiple de 2^max_level, sans quoi les
-        # blocs de fusion ne seraient pas alignés sur la grille et la fusion raterait par endroits
+        # the half-width in fine cells is rounded to a multiple of 2^max_level, otherwise the
+        # merge blocks would not be aligned on the grid and the merge would miss in places
         step = 1 << max_level
         n = int( np.ceil( np.ceil( self.outer_radius / h ) / step ) ) * step
 
@@ -239,23 +238,23 @@ class GradedMesh:
         return ( np.concatenate( centers )[ order ], np.concatenate( sizes )[ order ],
                  np.concatenate( levels )[ order ] )
 
-    # -- opérateur ---------------------------------------------------------
+    # -- operator ----------------------------------------------------------
 
     def _build_scatter( self ):
-        """Par niveau, la matrice creuse `[ nb_angles*nb_coarse, nb_cells_du_niveau ]` qui dépose
-        chaque cellule, en masse ponctuelle, à sa position projetée `s = centre.n_θ`.
+        """Per level, the sparse matrix `[ nb_angles*nb_coarse, nb_cells_of_the_level ]` that deposits
+        each cell, as a point mass, at its projected position `s = center.n_θ`.
 
-        Dépôt LINÉAIRE sur les deux cases voisines : la masse est conservée exactement, et l'erreur
-        introduite revient à convoluer par un triangle d'une case de large -- une case de flou de
-        plus sur un opérateur dont le noyau en fait déjà plusieurs. Ce qui compte davantage ici,
-        c'est que l'adjoint soit EXACTEMENT la transposée, ce que la forme matricielle garantit.
+        LINEAR deposit on the two neighboring bins: the mass is conserved exactly, and the error
+        introduced amounts to convolving by a triangle one bin wide -- one more bin of blur
+        on an operator whose kernel already has several. What matters more here
+        is that the adjoint be EXACTLY the transpose, which the matrix form guarantees.
         """
         out = []
         for _, mask in self._present:
             c = self.centers[ mask ]
             n = len( c )
             s = self.normals @ c.T                                     # [ nb_angles, n ]
-            x = ( s - self.s_min ) / self.coarse_dw - 0.5              # en indices de CENTRES
+            x = ( s - self.s_min ) / self.coarse_dw - 0.5              # in CENTER indices
             j = np.floor( x ).astype( int )
             w = x - j
             base = np.arange( self.nb_angles )[ :, None ] * self.nb_coarse
@@ -273,26 +272,26 @@ class GradedMesh:
         return out
 
     def _trapezoid( self, h ):
-        """Le profil de Radon d'un carré de côté `h`, échantillonné par case, pour chaque angle.
+        """The Radon profile of a square of side `h`, sampled per bin, for each angle.
 
-        C'est un TRAPÈZE : avec `a = h|cos θ|`, `b = h|sin θ|`, `u = max( a, b )`, `v = min( a, b )`,
-        le support est `|s| < ( u+v )/2`, le plateau `|s| < ( u−v )/2`, et sa hauteur `h²/u` (la
-        masse vaut `h²`, l'aire de la cellule -- c'est la vérification du calcul). On intègre sa
-        primitive entre bords de case, donc la masse est exacte case par case.
+        It is a TRAPEZOID: with `a = h|cos θ|`, `b = h|sin θ|`, `u = max( a, b )`, `v = min( a, b )`,
+        the support is `|s| < ( u+v )/2`, the plateau `|s| < ( u−v )/2`, and its height `h²/u` (the
+        mass is `h²`, the area of the cell -- this is the check of the computation). We integrate its
+        primitive between bin edges, so the mass is exact bin by bin.
 
-        Renvoie `[ nb_angles, 2*K+1 ]`, en densité, centré : l'indice K est la case du centre.
+        Returns `[ nb_angles, 2*K+1 ]`, as a density, centered: index K is the center bin.
         """
         a, b = h * np.abs( np.cos( self.angles ) ), h * np.abs( np.sin( self.angles ) )
         u, v = np.maximum( a, b ), np.minimum( a, b )
-        p, q = 0.5 * ( u - v ), 0.5 * ( u + v )                        # demi-plateau, demi-support
+        p, q = 0.5 * ( u - v ), 0.5 * ( u + v )                        # half-plateau, half-support
         H = h * h / np.maximum( u, 1e-300 )
 
         K = int( np.ceil( q.max() / self.coarse_dw ) ) + 1
-        e = ( np.arange( -K, K + 2 ) - 0.5 ) * self.coarse_dw          # bords de case, [ 2K+2 ]
+        e = ( np.arange( -K, K + 2 ) - 0.5 ) * self.coarse_dw          # bin edges, [ 2K+2 ]
         s = e[ None, : ]
         p, q, H, v = p[ :, None ], q[ :, None ], H[ :, None ], v[ :, None ]
 
-        # primitive du trapèze, écrite par morceaux puis recollée (v = 0 : simple créneau)
+        # primitive of the trapezoid, written piecewise then glued back (v = 0: simple box)
         safe_v = np.where( v > 1e-300, v, 1.0 )
         rise = H * np.clip( s + q, 0.0, None ) ** 2 / ( 2 * safe_v )
         fall = H * v / 2 + H * ( s + p )
@@ -303,12 +302,12 @@ class GradedMesh:
         return ( G[ :, 1: ] - G[ :, :-1 ] ) / self.coarse_dw
 
     def _build_kernels( self ):
-        """Pour chaque niveau, la FFT du trapèze, prête pour la convolution circulaire.
+        """For each level, the FFT of the trapezoid, ready for circular convolution.
 
-        Le noyau est placé centré-en-0 (décalages négatifs enroulés en fin de tableau) et la
-        longueur de FFT dépasse `nb_coarse + longueur du noyau` : ce qui déborderait du détecteur
-        atterrit dans la zone de remplissage, qu'on jette. C'est la bonne physique -- la matière
-        dont l'ombre sort du capteur n'est tout simplement pas mesurée.
+        The kernel is placed centered-at-0 (negative shifts wrapped to the end of the array) and the
+        FFT length exceeds `nb_coarse + kernel length`: whatever would overflow the detector
+        lands in the padding zone, which is discarded. This is the right physics -- matter
+        whose shadow falls off the sensor is simply not measured.
         """
         out = []
         for _, mask in self._present:
@@ -316,13 +315,13 @@ class GradedMesh:
             half = k.shape[ 1 ] // 2
             n = next_fast_len( self.nb_coarse + k.shape[ 1 ] + 1 )
             padded = np.zeros( ( self.nb_angles, n ) )
-            padded[ :, : half + 1 ] = k[ :, half: ]                    # décalages 0..+half
-            padded[ :, n - half : ] = k[ :, :half ]                    # décalages -half..-1
+            padded[ :, : half + 1 ] = k[ :, half: ]                    # shifts 0..+half
+            padded[ :, n - half : ] = k[ :, :half ]                    # shifts -half..-1
             out.append( ( rfft( padded, axis = 1 ), n ) )
         return out
 
     def project( self, weights ) -> np.ndarray:
-        """Sinogramme `[ nb_angles, nb_coarse ]` (densité) produit par les densités `weights`."""
+        """Sinogram `[ nb_angles, nb_coarse ]` (density) produced by the densities `weights`."""
         w = np.asarray( weights, dtype = float )
         acc = np.zeros( ( self.nb_angles, self.nb_coarse ) )
         for ( _, mask ), ( kf, n ), scat in zip( self._present, self._kernels, self._scatter ):
@@ -331,10 +330,10 @@ class GradedMesh:
         return acc
 
     def backproject( self, residual ) -> np.ndarray:
-        """L'ADJOINT exact de `project` : `[ nb_angles, nb_coarse ]` -> une valeur par cellule.
+        """The exact ADJOINT of `project`: `[ nb_angles, nb_coarse ]` -> one value per cell.
 
-        Exact et non approché parce que le trapèze est symétrique (la convolution est donc
-        auto-adjointe) et que le dépôt est une vraie matrice, qu'on transpose.
+        Exact and not approximate because the trapezoid is symmetric (the convolution is thus
+        self-adjoint) and the deposit is a true matrix, which we transpose.
         """
         r = np.asarray( residual, dtype = float )
         out = np.zeros( self.nb_cells )
@@ -344,7 +343,7 @@ class GradedMesh:
         return out
 
     def lipschitz( self, nb_iter: int = 20, seed: int = 0 ) -> float:
-        """`‖AᵀA‖` par la méthode de la puissance -- le pas de FISTA en dépend directement."""
+        """`‖AᵀA‖` by the power method -- the FISTA step depends directly on it."""
         v = np.random.default_rng( seed ).random( self.nb_cells )
         lam = 1.0
         for _ in range( nb_iter ):
@@ -355,20 +354,20 @@ class GradedMesh:
             v /= lam
         return lam
 
-    # -- régularisation ----------------------------------------------------
+    # -- regularization ----------------------------------------------------
 
     def edges( self ):
-        """Le graphe de voisinage du maillage, `( i, j, face, face/distance )`, construit une fois.
+        """The neighborhood graph of the mesh, `( i, j, face, face/distance )`, built once.
 
-        Deux cellules sont voisines si la distance de leurs centres est inférieure à
-        `0.75·( h_i + h_j )` -- ce qui attrape les voisines de même niveau ET les interfaces
-        fin/grossier, sans avoir à traiter la graduation comme un cas particulier.
+        Two cells are neighbors if the distance between their centers is less than
+        `0.75·( h_i + h_j )` -- which catches same-level neighbors AND fine/coarse
+        interfaces, without having to treat the grading as a special case.
 
-        Deux poids, parce que les deux régularisations ne mesurent pas la même chose : la longueur
-        de FACE `min( h_i, h_j )` fait de `Σ face·|Δ|` un vrai périmètre (variation totale), et
-        `face/distance` fait de `Σ ( face/dist )·Δ²` l'énergie de Dirichlet usuelle en volumes
-        finis. Sur une zone uniforme les deux valent 1 par arête, donc les deux poids de
-        régularisation restent comparables entre eux.
+        Two weights, because the two regularizations do not measure the same thing: the
+        FACE length `min( h_i, h_j )` makes `Σ face·|Δ|` a true perimeter (total variation), and
+        `face/distance` makes `Σ ( face/dist )·Δ²` the usual finite-volume Dirichlet energy. On a
+        uniform zone both equal 1 per edge, so the two regularization weights
+        remain comparable with each other.
         """
         if self._edges is None:
             tree = cKDTree( self.centers )
@@ -383,11 +382,11 @@ class GradedMesh:
         return self._edges
 
     def laplacian( self, w ):
-        """`L w`, avec `L` le laplacien du graphe pondéré par `face/distance` : le gradient de
-        l'énergie de Dirichlet `½ Σ ( face/dist )·( w_i − w_j )²`.
+        """`L w`, with `L` the Laplacian of the graph weighted by `face/distance`: the gradient of
+        the Dirichlet energy `½ Σ ( face/dist )·( w_i − w_j )²`.
 
-        C'est la régularisation LINÉAIRE. Tout le problème le reste alors -- ni valeur absolue ni
-        contrainte -- et se résout par gradient conjugué au lieu de FISTA.
+        This is the LINEAR regularization. The whole problem then stays so -- no absolute value nor
+        constraint -- and is solved by conjugate gradient instead of FISTA.
         """
         i, j, _, weight = self.edges()
         g = weight * ( w[ i ] - w[ j ] )
@@ -397,12 +396,12 @@ class GradedMesh:
         return out
 
     def _tv_grad( self, w, delta ):
-        """Gradient de la variation totale LISSÉE (Huber de paramètre `delta`), et sa valeur.
+        """Gradient of the SMOOTHED total variation (Huber with parameter `delta`), and its value.
 
-        Le lissage est ce qui permet de rester sur un FISTA ordinaire plutôt que d'écrire un
-        primal-dual : au-dessus de `delta` on paie bien `|Δ|` (les fronts sont préservés), en
-        dessous on paie `Δ²`, ce qui rend le tout dérivable. `delta` doit rester petit devant les
-        sauts de densité qu'on veut garder nets.
+        The smoothing is what lets us stay on an ordinary FISTA rather than writing a
+        primal-dual: above `delta` we do pay `|Δ|` (fronts are preserved), below
+        we pay `Δ²`, which makes the whole differentiable. `delta` must stay small compared to the
+        density jumps we want to keep sharp.
         """
         i, j, weight, _ = self.edges()
         d = w[ i ] - w[ j ]
@@ -414,10 +413,10 @@ class GradedMesh:
         np.add.at( out, j, -g )
         return float( weight @ val ), out
 
-    # -- résolution --------------------------------------------------------
+    # -- solving -----------------------------------------------------------
 
     def _target( self, sinogram ):
-        """Le sinogramme mesuré, ramené sur la grille grossière du maillage."""
+        """The measured sinogram, brought back onto the coarse grid of the mesh."""
         sino = sinogram if sinogram is not None else self.sinogram
         p = np.asarray( sino.values, dtype = float )
         return p.reshape( self.nb_angles, self.nb_coarse, self.group ).mean( axis = 2 )
@@ -425,41 +424,41 @@ class GradedMesh:
     def solve( self, sinogram: Sinogram | None = None, *, smooth: float = 3e-2,
                tv: float | None = None, nb_iter: int | None = None, nonneg: bool = False,
                huber: float | None = None, verbose: bool = False ) -> "GradedMesh":
-        """Ajuste `weights` sur le sinogramme mesuré. Met `weights` à jour et renvoie `self`.
+        """Fits `weights` to the measured sinogram. Updates `weights` and returns `self`.
 
-        Convexe dans tous les cas -- sans minimum local ni dépendance à l'initialisation, c'est
-        tout l'intérêt de passer par un maillage avant les diracs, dont le problème, lui, ne l'est
-        pas. Mais deux régimes très différents :
+        Convex in all cases -- with no local minimum nor dependence on initialization, which is
+        the whole point of going through a mesh before the diracs, whose problem is not. But two very
+        different regimes:
 
-        - `smooth` seul (défaut) : régularisation QUADRATIQUE, problème LINÉAIRE, résolu par
-          gradient conjugué sur `( AᵀA + λL ) w = Aᵀp`. Pas de valeur absolue, pas de contrainte,
-          pas de pas à estimer -- et une convergence en quelques dizaines d'itérations au lieu de
-          plusieurs centaines. C'est le bon choix ici : le maillage n'a pas à résoudre les
-          détails intérieurs (c'est le métier des diracs), il doit donner l'empreinte extérieure
-          et le partage de masse, deux quantités lisses ;
-        - `tv` : variation totale (Huber), qui préserve les fronts mais rend le problème non
-          linéaire -- FISTA, un paramètre de lissage de plus, et un coût bien supérieur. À réserver
-          au cas où le maillage doit vraiment tenir un bord franc.
+        - `smooth` alone (default): QUADRATIC regularization, LINEAR problem, solved by
+          conjugate gradient on `( AᵀA + λL ) w = Aᵀp`. No absolute value, no constraint,
+          no step to estimate -- and convergence in a few dozen iterations instead of
+          several hundred. This is the right choice here: the mesh does not have to resolve the interior
+          details (that is the diracs' job), it must give the exterior footprint
+          and the mass split, two smooth quantities;
+        - `tv`: total variation (Huber), which preserves fronts but makes the problem
+          nonlinear -- FISTA, one more smoothing parameter, and a much higher cost. To be reserved
+          for the case where the mesh must really hold a sharp edge.
 
-        `nonneg` force la positivité, ce qui fait retomber le cas quadratique sur FISTA aussi.
+        `nonneg` forces positivity, which makes the quadratic case fall back on FISTA too.
 
-        Les deux poids sont RELATIFS (mis à l'échelle par `‖AᵀA‖`, et par le niveau du sinogramme
-        pour la TV) : la même valeur se comporte pareil d'un cas à l'autre.
+        The two weights are RELATIVE (scaled by `‖AᵀA‖`, and by the sinogram level
+        for the TV): the same value behaves the same from one case to another.
 
-        NE PAS mettre la régularisation à 0. Mesuré sur `experiments/lung_mesh` (objet deux fois
-        plus large que le détecteur), la masse intérieure y semble la MEILLEURE de tout le
-        balayage (+5% contre −10%) -- mais la solution est du bruit sel-et-poivre saturé, dont la
-        moyenne tombe juste par accident ; la retirer du sinogramme y injecterait ce bruit. Le
-        problème intérieur a un noyau non trivial, il FAUT le régulariser, et juger sur la carte,
-        pas sur la masse.
+        Do NOT set the regularization to 0. Measured on `experiments/lung_mesh` (object twice
+        as wide as the detector), the interior mass there seems the BEST of the whole
+        sweep (+5% against −10%) -- but the solution is saturated salt-and-pepper noise, whose
+        mean comes out right by accident; removing it from the sinogram would inject that noise there. The
+        interior problem has a non-trivial kernel, it MUST be regularized, and judged on the map,
+        not on the mass.
 
-        Mesuré sur ce même cas : `smooth = 3e-2` (défaut) donne `M_in` à −12.7% et une masse par
-        angle corrigée à 0.25%, contre −10.0% et 0.37% pour `tv = 3e-3`, pour HUIT FOIS moins de
-        temps (0.8 s contre 6.8 s). Le quadratique laisse en revanche un anneau parasite au bord du
-        champ de vue, que la TV n'a pas : si c'est la CARTE qui compte et non l'empreinte, prendre
-        la TV. Essayé et REJETÉ pour supprimer cet anneau : surpondérer les arêtes qui traversent
-        le bord du champ (imposer la continuité y dégrade `M_in` de façon monotone, jusqu'à −54%
-        pour un facteur 1000).
+        Measured on this same case: `smooth = 3e-2` (default) gives `M_in` at −12.7% and a corrected
+        mass per angle at 0.25%, against −10.0% and 0.37% for `tv = 3e-3`, for EIGHT TIMES less
+        time (0.8 s versus 6.8 s). The quadratic does leave a parasitic ring at the edge of the
+        field of view, which the TV does not: if it is the MAP that matters and not the footprint, take
+        the TV. Tried and REJECTED to suppress this ring: overweighting the edges that cross
+        the field boundary (imposing continuity there degrades `M_in` monotonically, down to −54%
+        for a factor 1000).
         """
         p = self._target( sinogram )
         if tv is None and not nonneg:
@@ -468,10 +467,10 @@ class GradedMesh:
                                   huber, verbose )
 
     def _solve_cg( self, p, smooth, nb_iter, verbose ):
-        """Gradient conjugué sur les équations normales `( AᵀA + λL ) w = Aᵀp` -- le cas linéaire.
+        """Conjugate gradient on the normal equations `( AᵀA + λL ) w = Aᵀp` -- the linear case.
 
-        `λ` est calibré pour que la norme de `λL` vaille `smooth·‖AᵀA‖` : le poids est donc sans
-        dimension, et directement comparable d'un maillage à l'autre.
+        `λ` is calibrated so that the norm of `λL` equals `smooth·‖AᵀA‖`: the weight is thus
+        dimensionless, and directly comparable from one mesh to another.
         """
         lam = float( smooth ) * self.lipschitz() / max( self._degree().max(), 1e-30 )
 
@@ -492,39 +491,39 @@ class GradedMesh:
             rr, rr_old = float( r @ r ), rr
             d = r + ( rr / rr_old ) * d
             if verbose and ( it % 10 == 0 or it == nb_iter - 1 ):
-                print( f"  [mesh/cg] it { it:3d}: ‖résidu‖ { np.sqrt( rr ):.4g}"
-                       f"  masse { self.mass( w ):.6g} (dont { self.interior_mass( w ):.6g} dedans)" )
+                print( f"  [mesh/cg] it { it:3d}: ‖residual‖ { np.sqrt( rr ):.4g}"
+                       f"  mass { self.mass( w ):.6g} (of which { self.interior_mass( w ):.6g} inside)" )
 
         neg = float( -np.minimum( w, 0.0 ).sum() * 1.0 )
         if verbose and neg > 0:
-            print( f"  [mesh/cg] négatifs écrêtés : { neg / max( np.abs( w ).sum(), 1e-30 ):.2%} "
-                   "de la masse absolue" )
+            print( f"  [mesh/cg] negatives clipped: { neg / max( np.abs( w ).sum(), 1e-30 ):.2%} "
+                   "of the absolute mass" )
         self.weights = np.maximum( w, 0.0 )
         return self
 
     def _degree( self ):
-        """`Σ_j poids_ij` par cellule, pour le laplacien quadratique -- majore sa norme."""
+        """`Σ_j weight_ij` per cell, for the quadratic Laplacian -- bounds its norm."""
         i, j, _, weight = self.edges()
         return ( np.bincount( i, weight, self.nb_cells ) + np.bincount( j, weight, self.nb_cells ) )
 
     def _solve_fista( self, p, smooth, tv, nb_iter, huber, verbose ):
-        """FISTA projeté : le cas non linéaire (variation totale et/ou positivité imposée)."""
+        """Projected FISTA: the nonlinear case (total variation and/or imposed positivity)."""
         lip = self.lipschitz()
-        # échelle de densité plausible : la masse mesurée répartie sur le disque du champ de vue
+        # plausible density scale: the measured mass spread over the disk of the field of view
         scale = float( p.sum( axis = 1 ).mean() * self.coarse_dw / ( np.pi * self.inner_radius ** 2 ) )
         delta = float( huber ) if huber is not None else max( 1e-2 * scale, 1e-30 )
 
         i, j, face, quad = self.edges()
-        if tv is None:                                 # quadratique + positivité
+        if tv is None:                                 # quadratic + positivity
             lam, reg_deg = float( smooth ) * lip / max( self._degree().max(), 1e-30 ), self._degree().max()
             reg = lambda w: ( 0.5 * float( quad @ ( w[ i ] - w[ j ] ) ** 2 ), self.laplacian( w ) )
             curvature = lam * 2 * float( reg_deg )
-        else:                                          # variation totale (Huber)
+        else:                                          # total variation (Huber)
             lam = float( tv ) * lip * max( scale, 1e-30 )
             deg = np.bincount( i, face, self.nb_cells ) + np.bincount( j, face, self.nb_cells )
             reg = lambda w: self._tv_grad( w, delta )
             curvature = lam * 2 * float( deg.max() ) / delta
-        step = 1.0 / ( lip + curvature )               # majorant de la courbure du terme lissé
+        step = 1.0 / ( lip + curvature )               # upper bound of the curvature of the smooth term
 
         w = self.weights.copy()
         y, t = w.copy(), 1.0
@@ -532,56 +531,56 @@ class GradedMesh:
             resid = self.project( y ) - p
             tv_val, tv_grad = reg( y )
             nxt = np.maximum( y - step * ( self.backproject( resid ) + lam * tv_grad ), 0.0 )
-            # redémarrage sur le GRADIENT (O'Donoghue-Candès) : quand le pas d'inertie pointe à
-            # l'opposé du pas de descente, l'élan travaille contre nous et FISTA se met à osciller
-            # -- mesuré ici sur des centaines d'itérations, avec une masse intérieure qui battait
-            # de +/-7%. On remet alors l'élan à zéro, ce qui coûte un scalaire par itération.
+            # restart on the GRADIENT (O'Donoghue-Candès): when the momentum step points
+            # opposite to the descent step, the momentum works against us and FISTA starts to oscillate
+            # -- measured here over hundreds of iterations, with an interior mass that fluctuated
+            # by +/-7%. We then reset the momentum to zero, which costs one scalar per iteration.
             if float( ( y - nxt ) @ ( nxt - w ) ) > 0:
                 t = 1.0
             t_next = 0.5 * ( 1 + np.sqrt( 1 + 4 * t * t ) )
             y, w, t = nxt + ( ( t - 1 ) / t_next ) * ( nxt - w ), nxt, t_next
             if verbose and ( it % 25 == 0 or it == nb_iter - 1 ):
                 print( f"  [mesh/fista] it { it:4d}: ½‖Aw−p‖² { 0.5 * float( ( resid ** 2 ).sum() ):.6g}"
-                       f"  régul { tv_val:.6g}  masse { self.mass( w ):.6g}"
-                       f" (dont { self.interior_mass( w ):.6g} dedans)" )
+                       f"  regul { tv_val:.6g}  mass { self.mass( w ):.6g}"
+                       f" (of which { self.interior_mass( w ):.6g} inside)" )
 
         self.weights = w
         return self
 
-    # -- sorties -----------------------------------------------------------
+    # -- outputs -----------------------------------------------------------
 
     def mass( self, weights = None ) -> float:
         w = self.weights if weights is None else weights
         return float( np.asarray( w ) @ self.areas )
 
     def interior_mass( self, weights = None ) -> float:
-        """La masse que le maillage attribue au CHAMP DE VUE -- le `M_in` que `halo.py` devait
-        deviner, et qu'on lit ici directement sur la solution."""
+        """The mass the mesh attributes to the FIELD OF VIEW -- the `M_in` that `halo.py` had to
+        guess, and which is read here directly off the solution."""
         w = self.weights if weights is None else weights
         return float( np.asarray( w )[ self.interior ] @ self.areas[ self.interior ] )
 
     def values( self, mask = None ) -> np.ndarray:
-        """Empreinte sur le sinogramme MESURÉ (pleine résolution, `[ nb_angles, nb_bins ]`) des
-        cellules retenues par `mask` (toutes par défaut).
+        """Footprint on the MEASURED sinogram (full resolution, `[ nb_angles, nb_bins ]`) of the
+        cells selected by `mask` (all by default).
 
-        Le retour à la grille fine est une simple répétition : constante par paquet, donc de masse
-        exacte -- et l'empreinte varie peu d'une case grossière à l'autre, c'est tout le propos.
+        The return to the fine grid is a simple repetition: constant per packet, hence of exact
+        mass -- and the footprint varies little from one coarse bin to the next, which is the whole point.
         """
         w = self.weights if mask is None else np.where( mask, self.weights, 0.0 )
         return np.repeat( self.project( w ), self.group, axis = 1 )
 
     def exterior_values( self, alpha: float = 1.0 ) -> np.ndarray:
-        """L'empreinte des seules cellules HORS champ de vue, multipliée par `alpha` -- ce qu'il
-        faut retirer du sinogramme avant de rendre l'intérieur aux diracs.
+        """The footprint of only the cells OUTSIDE the field of view, multiplied by `alpha` -- what
+        must be removed from the sinogram before handing the interior back to the diracs.
 
-        `alpha` est le SEUL degré de liberté qui reste vraiment ouvert (cf. `scan_exterior_scale`) :
-        le noyau du problème intérieur permet de déplacer un niveau lentement variable entre le
-        dedans et le dehors, et la régularisation en choisit un arbitrairement.
+        `alpha` is the ONLY degree of freedom that remains truly open (cf. `scan_exterior_scale`):
+        the kernel of the interior problem allows moving a slowly varying level between the
+        inside and the outside, and the regularization picks one arbitrarily.
         """
         return float( alpha ) * self.values( ~self.interior )
 
     def corrected( self, sinogram: Sinogram | None = None, alpha: float = 1.0 ) -> Sinogram:
-        """Le sinogramme débarrassé de la contribution extérieure, écrêté à 0."""
+        """The sinogram stripped of the exterior contribution, clipped at 0."""
         sino = sinogram if sinogram is not None else self.sinogram
         out = Sinogram( nb_angles = self.nb_angles, nb_bins = self.nb_bins,
                         extent = sino.extent, detector_center = sino.detector_center )
@@ -589,12 +588,12 @@ class GradedMesh:
         return out
 
     def clipped_fraction( self, alpha: float = 1.0, sinogram: Sinogram | None = None ) -> float:
-        """Part de masse que l'écrêtage à 0 doit inventer, `Σ max( 0, α·E − p ) / Σ p`.
+        """Share of mass that the clipping at 0 has to invent, `Σ max( 0, α·E − p ) / Σ p`.
 
-        Indicateur MODÈLE-LIBRE de sur-soustraction : la projection de l'intérieur étant positive,
-        `α·E` ne peut pas dépasser `p`. Tant qu'il reste nul, `alpha` est physiquement admissible ;
-        il ne dit en revanche rien de la SOUS-soustraction, et reste donc muet quand l'objet remplit
-        le détecteur à tous les angles.
+        MODEL-FREE indicator of over-subtraction: the projection of the interior being positive,
+        `α·E` cannot exceed `p`. As long as it stays zero, `alpha` is physically admissible;
+        it says nothing, however, about UNDER-subtraction, and thus stays silent when the object fills
+        the detector at all angles.
         """
         sino = sinogram if sinogram is not None else self.sinogram
         p = np.asarray( sino.values, dtype = float )

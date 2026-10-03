@@ -1,21 +1,21 @@
-"""Cas de démonstration de la reconstruction par DISQUES (`models.DiskModel`).
+"""Demo cases for DISK reconstruction (`models.DiskModel`).
 
-Chaque cas est AUTONOME : il fabrique son sinogramme analytiquement (`Sinogram.add_disk`, donc
-sans jamais discrétiser une image), part d'un tirage aléatoire de centres et optimise. Aucune
-étape préalable n'est nécessaire -- mais `--diracs` en ajoute une (reconstruction en diracs puis
-raffinement en disques sur le MÊME nuage), pour illustrer le chaînage qu'offre `Reconstruction`.
+Each case is SELF-CONTAINED: it builds its sinogram analytically (`Sinogram.add_disk`, so
+without ever discretizing an image), starts from a random draw of centers and optimizes. No
+prior stage is needed -- but `--diracs` adds one (Dirac reconstruction, then
+disk refinement on the SAME cloud), to illustrate the chaining that `Reconstruction` offers.
 
-Sorties, dans `applications/reconstruction/benchmarks/results/` :
-- `disks_<cas>.html` : le nuage de centres au fil de la convergence, rejouable (barre de temps),
-  avec les RAYONS EXPORTÉS -- les disques sont dessinés à leur taille réelle, le slider n'étant
-  plus qu'un facteur d'échelle (voir `viz/points_html.py`).
-- `disks_<cas>_profils.png` (option `--profils`) : profils mesuré vs modèle à quelques angles,
-  pour voir de près ce que la perte de Wasserstein a réellement ajusté.
+Outputs, in `applications/reconstruction/benchmarks/results/`:
+- `disks_<case>.html`: the cloud of centers over the course of convergence, replayable (time bar),
+  with the EXPORTED RADII -- the disks are drawn at their real size, the slider being
+  only a scale factor (see `viz/points_html.py`).
+- `disks_<case>_profiles.png` (option `--profiles`): measured vs model profiles at a few angles,
+  to see up close what the Wasserstein loss actually fitted.
 
-Usage :
-    python -m applications.reconstruction.experiments.disks_demo            # tous les cas
+Usage:
+    python -m applications.reconstruction.experiments.disks_demo            # all cases
     python -m applications.reconstruction.experiments.disks_demo few ring
-    python -m applications.reconstruction.experiments.disks_demo grid --profils
+    python -m applications.reconstruction.experiments.disks_demo grid --profiles
     python -m applications.reconstruction.experiments.disks_demo few --diracs
 """
 import argparse
@@ -31,7 +31,7 @@ RESULTS = os.path.join( os.path.dirname( os.path.dirname( os.path.abspath( __fil
                         "benchmarks", "results" )
 
 
-# ---- fantômes (vérité terrain : une liste de centres + un rayon commun) --------------------
+# ---- phantoms (ground truth: a list of centers + a common radius) --------------------
 
 def _few( seed = 0 ):
     return np.array( [ [ 0.8, 0.3 ], [ -0.9, 0.6 ], [ 0.1, -1.1 ], [ -0.5, -0.7 ], [ 1.3, -0.4 ] ] ), 0.4
@@ -46,8 +46,8 @@ def _ring( seed = 3, n = 60 ):
 
 
 def _grid( seed = 5, nx = 9, ny = 9 ):
-    """Grille hexagonale jittérée, tronquée en disque -- un cas dense où les projections de
-    disques voisins se recouvrent largement à presque tous les angles."""
+    """Jittered hexagonal grid, truncated to a disk -- a dense case where the projections of
+    neighboring disks overlap heavily at almost all angles."""
     r = 0.11
     spacing = 2.6 * r
     rng = np.random.default_rng( seed )
@@ -63,14 +63,14 @@ def _grid( seed = 5, nx = 9, ny = 9 ):
 
 
 CASES = {
-    # nom     -> ( fantôme, nb_angles, nb_bins, facteur de finesse de la grille image, étendue init )
+    # name    -> ( phantom, nb_angles, nb_bins, fineness factor of the image grid, init extent )
     "few":  ( _few,  24, 128, 2, 3.0 ),
     "ring": ( _ring, 32, 192 * 2, 2, 3.0 ),
     "grid": ( _grid, 48, 256, 3, 2.0 ),
 }
 
 
-def run_case( name, extent = 6.0, max_iter = 500, seed = 7, profils = False, animate = True,
+def run_case( name, extent = 6.0, max_iter = 500, seed = 7, profiles = False, animate = True,
               diracs = False ):
     phantom, nb_angles, nb_bins, fineness, init_extent = CASES[ name ]
     truth, radius = phantom()
@@ -79,9 +79,9 @@ def run_case( name, extent = 6.0, max_iter = 500, seed = 7, profils = False, ani
     for c in truth:
         sino.add_disk( center = list( c ), radius = radius )
 
-    # grille image plus fine que le détecteur : un disque de rayon `radius` ne couvre que
-    # `2*radius/dw` cases détecteur ; la raffiner rend la projection modélisée plus lisse sans
-    # toucher aux données mesurées.
+    # image grid finer than the detector: a disk of radius `radius` only covers
+    # `2*radius/dw` detector bins; refining it makes the modeled projection smoother without
+    # touching the measured data.
     rec = Reconstruction(
         sino, radius = radius, nb_pixels = fineness * nb_bins, extent = init_extent,
         max_iter = max_iter, ftol = 1e-14, record = animate, verbose = True,
@@ -89,33 +89,33 @@ def run_case( name, extent = 6.0, max_iter = 500, seed = 7, profils = False, ani
     rec.random_points( len( truth ), seed = seed )
     l0 = rec.loss()
 
-    print( f"[{ name }] { len( truth ) } disques r={ radius }, { nb_angles } angles x { nb_bins } cases" )
+    print( f"[{ name }] { len( truth ) } disks r={ radius }, { nb_angles } angles x { nb_bins } bins" )
     if diracs:
-        # étage préalable en DIRACS : bon marché et insensible au tirage, il amène déjà le nuage
-        # sur la masse ; l'étage disques n'a plus qu'à l'ajuster finement.
+        # preliminary DIRAC stage: cheap and insensitive to the draw, it already brings the cloud
+        # onto the mass; the disk stage only has to fine-tune it.
         rec.diracs( max_iter = min( 100, max_iter ) )
     rec.disks()
     l1 = rec.loss()
     floor = rec.floor()
 
-    print( f"  perte { l0:.6f} -> { l1:.8f}  (plancher de quantification { floor:.8f})" )
+    print( f"  loss { l0:.6f} -> { l1:.8f}  (quantization floor { floor:.8f})" )
 
     os.makedirs( RESULTS, exist_ok = True )
     out = os.path.join( RESULTS, f"disks_{ name }.html" )
-    rec.export_html( out, extent = extent,           # rayon FIXE : exporté et dessiné tel quel
-                     title = f"disques — { name } ({ len( truth ) } x r={ radius })", fps = 10 )
+    rec.export_html( out, extent = extent,           # FIXED radius: exported and drawn as is
+                     title = f"disks — { name } ({ len( truth ) } x r={ radius })", fps = 10 )
 
-    if profils:
+    if profiles:
         _plot_profiles( sino, rec.disk_model().projector, rec.points,
-                        os.path.join( RESULTS, f"disks_{ name }_profils.png" ) )
+                        os.path.join( RESULTS, f"disks_{ name }_profiles.png" ) )
 
     return rec, truth, l0, l1, floor
 
 
 def _plot_profiles( sino, proj, centers, out_path, nb_shown = 4 ):
-    """Compare, à quelques angles, le profil MESURÉ (constant par morceaux sur le détecteur) et
-    le profil MODÈLE (projection des disques reconstruits). Les deux sont normalisés à la masse 1
-    par angle, comme le fait la perte -- c'est la seule chose que le transport optimal compare.
+    """Compare, at a few angles, the MEASURED profile (piecewise constant on the detector) and
+    the MODEL profile (projection of the reconstructed disks). Both are normalized to mass 1
+    per angle, as the loss does -- it is the only thing optimal transport compares.
     """
     import matplotlib.pyplot as plt
 
@@ -127,29 +127,29 @@ def _plot_profiles( sino, proj, centers, out_path, nb_shown = 4 ):
     for ax, k in zip( np.atleast_1d( axes ), ks ):
         m = measured[ k ] / ( measured[ k ].sum() * sino.dw )
         g = model[ k ] / ( model[ k ].sum() * proj.dw )
-        ax.step( sino.bin_centers, m, where = "mid", label = "mesuré", lw = 1.2 )
-        ax.step( proj.pixel_centers, g, where = "mid", label = "modèle (disques)", lw = 1.0 )
+        ax.step( sino.bin_centers, m, where = "mid", label = "measured", lw = 1.2 )
+        ax.step( proj.pixel_centers, g, where = "mid", label = "model (disks)", lw = 1.0 )
         ax.set_ylabel( f"θ = { np.degrees( sino.angles[ k ] ):.0f}°" )
         ax.legend( loc = "upper right", fontsize = 8 )
-    np.atleast_1d( axes )[ -1 ].set_xlabel( "coordonnée détecteur s" )
+    np.atleast_1d( axes )[ -1 ].set_xlabel( "detector coordinate s" )
     fig.tight_layout()
     fig.savefig( out_path, dpi = 120 )
     plt.close( fig )
-    print( f"  profils sauvés: { out_path }" )
+    print( f"  profiles saved: { out_path }" )
 
 
 def main():
     ap = argparse.ArgumentParser( description = __doc__ )
     ap.add_argument( "cases", nargs = "*", choices = list( CASES ),
-                     help = "cas à lancer (défaut : tous)" )
-    ap.add_argument( "--profils", action = "store_true", help = "exporter aussi la comparaison de profils (matplotlib)" )
-    ap.add_argument( "--diracs", action = "store_true", help = "étage préalable en diracs, avant les disques" )
+                     help = "cases to run (default: all)" )
+    ap.add_argument( "--profiles", action = "store_true", help = "also export the profile comparison (matplotlib)" )
+    ap.add_argument( "--diracs", action = "store_true", help = "preliminary Dirac stage, before the disks" )
     ap.add_argument( "--max-iter", type = int, default = 500 )
     ap.add_argument( "--seed", type = int, default = 7 )
     args = ap.parse_args()
 
     for name in ( args.cases or list( CASES ) ):
-        run_case( name, max_iter = args.max_iter, seed = args.seed, profils = args.profils,
+        run_case( name, max_iter = args.max_iter, seed = args.seed, profiles = args.profiles,
                   diracs = args.diracs )
         print()
 

@@ -19,9 +19,7 @@ Each run saves its behaviour under a NAME (`--name`, defaults to a slug of
 both overwritten on rerun), then reloads every `*.json` there and redraws
 the comparison plot from all of them — so runs accumulate across sessions:
 try one pipeline today, another tomorrow, and the plot keeps both. Comparing
-BACKENDS is just two runs with different `--name`s (e.g.
-`--backend=sycl --name=sycl` then `--backend=jax --name=jax`), the same way
-comparing algorithms is.
+algorithms is just several runs with different `--name`s.
 
 If any `LineSearch` in the pipeline was built with `instrument_iters=N`
 (`gd`/`pr` only — see `optim.gradient_line_search`), the recorder's
@@ -36,7 +34,7 @@ Run via:
     ./run experiment hc --pipeline="multiscale(grid2d(diracs); nb_points_init=100)" --max-iter=15 --name=grid2d
     ./run experiment hc --pipeline="gd(diracs; instrument_iters=4)" --max-iter=8 --name=debug
     ./run experiment hc --name=triangles --nb-diracs=5000 --pipeline="multiscale(gd(diracs) + lbfgs(triangle(radius_factor=0.5)); nb_points_init=100) + lbfgs(triangle(radius_factor=0.5))"
-    ./run experiment hc --backend=jax --name=polygons --pipeline="multiscale(lbfgs(polygon(n_sides=3; radius_factor=0.5)); nb_points_init=100)"
+    ./run experiment hc --name=polygons --pipeline="multiscale(lbfgs(polygon(n_sides=3; radius_factor=0.5)); nb_points_init=100)"
 """
 import re
 import time
@@ -45,8 +43,7 @@ import jax
 # The disks/triangle jax cost's ~2000-element cumsum/searchsorted loses enough
 # float32 precision at late (many, near-touching) multiscale stages to
 # occasionally produce a NEGATIVE cost -- see [[HcReconstruction disks model]].
-# The sycl backend is unaffected (its sweep is double-precision internally);
-# this is cheap insurance for jax-backend disks pipelines specifically.
+# This is cheap insurance for disks pipelines.
 jax.config.update("jax_enable_x64", True)
 
 import matplotlib
@@ -122,7 +119,6 @@ if p := experiment("hc",
     nb_angles = Param(600, help = "Nb angles"),
     max_iter = Param(20, help = "default max line-search iterations per stage, unless a stage "
                                "sets its own max_iter"),
-    backend = Param("sycl", help = "OT backend: jax | sycl"),
     seed = Param(1, help = "initial point cloud seed"),
     print_steps = Param(True, help = "print every line-search step (--print-steps to enable; "
                                      "'--verbose' collides with ./run's own global flag)"),
@@ -130,7 +126,7 @@ if p := experiment("hc",
     name = p.name or _slugify(p.pipeline)
 
     hc, lobes, alveoli = HcReconstruction.make_lung_phantom(
-        nb_alveoli = p.nb_alveoli, backend = p.backend, nb_angles = p.nb_angles, record = True)
+        nb_alveoli = p.nb_alveoli, nb_angles = p.nb_angles, record = True)
 
     t0 = time.time()
     hc.run_pipeline(
@@ -140,7 +136,7 @@ if p := experiment("hc",
     dt = time.time() - t0
     print(f"\n{name}: {dt:.2f}s total, final loss={hc.recorder.loss_history[-1]['cost']:.6f}")
 
-    meta = dict(pipeline = p.pipeline, backend = p.backend, nb_alveoli = p.nb_alveoli,
+    meta = dict(pipeline = p.pipeline, nb_alveoli = p.nb_alveoli,
                nb_diracs = p.nb_diracs, nb_angles = p.nb_angles, max_iter = p.max_iter,
                seed = p.seed)
     out_file = save_run(p.results_dir, name, meta, hc.recorder.loss_history, hc.recorder.timings)

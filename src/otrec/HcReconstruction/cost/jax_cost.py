@@ -46,10 +46,7 @@ class JaxDisksCost(CostModel):
 
     `shape` : "disk" (the true circular chord profile, see
     `jax_disks._disk_mass_angle`) or "triangle" (a tent of support
-    half-width `radius`, see `jax_disks._triangle_mass_angle`) — the SYCL
-    disks kernel (`cost.sycl_cost.SyclDisksCost`) is continuous and only
-    knows how to sweep "triangle" in closed form; `cost.factory.build_cost_model`
-    enforces that at construction time, not this class.
+    half-width `radius`, see `jax_disks._triangle_mass_angle`).
     """
 
     def __init__(self, sinogram, radius: float, nb_pixels: int, shape: str = "disk"):

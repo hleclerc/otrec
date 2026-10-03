@@ -1,22 +1,22 @@
-"""Export d'un nuage de points 2D en page HTML autonome, avec un <canvas> plein écran et un
-disque dessiné par point -- alternative à `matplotlib.pyplot.plot(..., '.')`, peu lisible et peu
-interactif à grande échelle (pas de zoom, marqueurs de taille fixe en pixels écran).
+"""Export of a 2D point cloud as a standalone HTML page, with a full-screen <canvas> and one
+disk drawn per point -- an alternative to `matplotlib.pyplot.plot(..., '.')`, which is hard to read and
+barely interactive at large scale (no zoom, markers of fixed size in screen pixels).
 
-Supporte aussi une SÉQUENCE de nuages ("frames", ex. les positions à chaque étape d'une
-reconstruction) : la page ajoute alors une barre de temps + un bouton play/pause pour rejouer le
-déplacement des points jusqu'à convergence.
+Also supports a SEQUENCE of clouds ("frames", e.g. the positions at each step of a
+reconstruction): the page then adds a time bar + a play/pause button to replay the
+movement of the points until convergence.
 
-Chaque point est soit un "point" soit une "forme" (voir `export_positions_html`), déterminé PAR
-POINT (pas globalement -- un même export peut mélanger les deux, ex. un nuage qui interleave des
-étages diracs et des étages disques) :
-- "point" (pas de `radii`/`vertex_offsets` du tout, ou un rayon de 0 -- nuage de diracs) -- le
-  rayon dessiné est un pur réglage d'affichage, piloté en unités MONDE par le slider.
-- "forme" (`radii` > 0, ou `vertex_offsets` -- ex. la reconstruction par disques de `disks.py`,
-  où le rayon/la géométrie fait partie du modèle) -- dessinée à la taille EXACTE exportée ; le
-  slider ne s'applique pas (une forme n'a pas d'"échelle", juste la taille qu'on lui a envoyée).
+Each point is either a "point" or a "shape" (see `export_positions_html`), determined PER
+POINT (not globally -- a single export can mix both, e.g. a cloud that interleaves
+Dirac stages and disk stages):
+- "point" (no `radii`/`vertex_offsets` at all, or a radius of 0 -- Dirac cloud) -- the
+  drawn radius is a pure display setting, driven in WORLD units by the slider.
+- "shape" (`radii` > 0, or `vertex_offsets` -- e.g. the disk reconstruction of `disks.py`,
+  where the radius/geometry is part of the model) -- drawn at the EXACT exported size; the
+  slider does not apply (a shape has no "scale", just the size it was given).
 
-Fichier UNIQUE et autonome (les points sont encodés en base64 directement dans le HTML, pas de
-fichier annexe / pas de serveur -- s'ouvre directement depuis le disque, `file://`).
+SINGLE, standalone file (the points are base64-encoded directly in the HTML, no side
+file / no server -- opens directly from disk, `file://`).
 """
 import base64
 import json
@@ -77,7 +77,7 @@ _HTML = """<!DOCTYPE html>
 </head>
 <body data-theme="light">
 <div id="controls">
-  <label><span id="rname">rayon</span> : <span id="rval">__RADIUS__</span>
+  <label><span id="rname">radius</span> : <span id="rval">__RADIUS__</span>
     <input id="r" type="range" min="0" max="1" step="0.001" value="__RT0__">
   </label>
   <div><span id="ptcount">__N__</span> points</div>
@@ -88,23 +88,23 @@ _HTML = """<!DOCTYPE html>
       <span id="tval">1 / 1</span>
     </div>
   </div>
-  <div class="hint">appuyer sur <b>?</b> pour l’aide · <b>d</b> : <span id="modeLabel">clair</span></div>
+  <div class="hint">press <b>?</b> for help · <b>d</b>: <span id="modeLabel">light</span></div>
 </div>
 <div id="help">
-  <b>Raccourcis clavier</b>
+  <b>Keyboard shortcuts</b>
   <table>
-    <tr><td>&larr; / &rarr;</td><td>temps -1 / +1</td></tr>
-    <tr><td>Maj/Ctrl + &larr;/&rarr;</td><td>temps, pas plus large</td></tr>
-    <tr><td>Home / End</td><td>première / dernière frame</td></tr>
-    <tr><td>Espace</td><td>lecture / pause</td></tr>
-    <tr><td>&uarr; / &darr;</td><td>rayon + / - (Maj/Ctrl: plus vite)</td></tr>
-    <tr><td>+ / -</td><td>zoom avant/arrière (Maj/Ctrl: plus vite)</td></tr>
-    <tr><td>0</td><td>réinitialiser la vue</td></tr>
-    <tr><td>glisser</td><td>pan</td></tr>
-    <tr><td>molette / pincement</td><td>pan / zoom</td></tr>
-    <tr><td>double-clic</td><td>réinitialiser la vue</td></tr>
-    <tr><td>d</td><td>basculer clair / sombre</td></tr>
-    <tr><td>?</td><td>afficher/masquer cette aide</td></tr>
+    <tr><td>&larr; / &rarr;</td><td>time -1 / +1</td></tr>
+    <tr><td>Shift/Ctrl + &larr;/&rarr;</td><td>time, larger step</td></tr>
+    <tr><td>Home / End</td><td>first / last frame</td></tr>
+    <tr><td>Space</td><td>play / pause</td></tr>
+    <tr><td>&uarr; / &darr;</td><td>radius + / - (Shift/Ctrl: faster)</td></tr>
+    <tr><td>+ / -</td><td>zoom in/out (Shift/Ctrl: faster)</td></tr>
+    <tr><td>0</td><td>reset the view</td></tr>
+    <tr><td>drag</td><td>pan</td></tr>
+    <tr><td>wheel / pinch</td><td>pan / zoom</td></tr>
+    <tr><td>double-click</td><td>reset the view</td></tr>
+    <tr><td>d</td><td>toggle light / dark</td></tr>
+    <tr><td>?</td><td>show/hide this help</td></tr>
   </table>
 </div>
 <canvas id="c"></canvas>
@@ -116,9 +116,9 @@ function decodeF32(b64) {
   for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
   return new Float32Array(buf);
 }
-const pts = decodeF32("__B64__");            // toutes les frames concaténées : [x0,y0, x1,y1, ...]
-const COUNTS = __COUNTS__;                   // nb de points par frame (peut varier d'une frame à l'autre)
-const OFFSETS = (() => {                     // offset (en points) du début de chaque frame
+const pts = decodeF32("__B64__");            // all frames concatenated : [x0,y0, x1,y1, ...]
+const COUNTS = __COUNTS__;                   // number of points per frame (may vary from one frame to the next)
+const OFFSETS = (() => {                     // offset (in points) of the start of each frame
   let acc = 0;
   const o = [];
   for (const c of COUNTS) { o.push(acc); acc += c; }
@@ -126,32 +126,32 @@ const OFFSETS = (() => {                     // offset (en points) du début de 
 })();
 const nFrames = COUNTS.length;
 const FPS = __FPS__;
-const bound = __BOUND__;                     // demi-étendue du monde affiché ([-bound,bound]^2)
-const RMIN = __RMIN__, RMAX = __RMAX__;      // bornes du slider, échelle log
+const bound = __BOUND__;                     // half-extent of the displayed world ([-bound,bound]^2)
+const RMIN = __RMIN__, RMAX = __RMAX__;      // slider bounds, log scale
 
-// Deux catégories de points, distinguées par point (pas globalement) :
-//  - "point" (pas de donnée de taille propre : RADII/R0 <= 0, ou SCALED = false) -- un simple
-//    disque, toujours dessiné à la taille du SLIDER (unités monde absolues, `rPoint()`) : c'est
-//    un point (dirac), pas une forme, il a son propre réglage d'affichage.
-//  - "forme" (RADII[i] > 0 -- ou R0 > 0 quand RADII est uniforme --, ou VERT_OFFSETS) -- taille
-//    fixée par le MODÈLE (rayon/sommets exportés), dessinée TELLE QUELLE : le slider ne
-//    s'applique pas (une forme n'a pas d'"échelle", juste la taille qu'on lui a envoyée).
-// SCALED = false (aucun `radii`/`vertex_offsets` fourni) : comportement historique intact, tous
-// les points sont dessinés avec le marqueur demandé (MARKER_VERTS ou cercle) à la taille du
-// slider -- pas de distinction point/forme possible sans donnée de rayon.
+// Two categories of points, distinguished per point (not globally):
+//  - "point" (no size data of its own: RADII/R0 <= 0, or SCALED = false) -- a simple
+//    disk, always drawn at the SLIDER's size (absolute world units, `rPoint()`): it is
+//    a point (Dirac), not a shape, it has its own display setting.
+//  - "shape" (RADII[i] > 0 -- or R0 > 0 when RADII is uniform --, or VERT_OFFSETS) -- size
+//    set by the MODEL (exported radius/vertices), drawn AS IS: the slider does not
+//    apply (a shape has no "scale", just the size it was given).
+// SCALED = false (no `radii`/`vertex_offsets` provided): historical behavior intact, all
+// points are drawn with the requested marker (MARKER_VERTS or circle) at the slider's
+// size -- no point/shape distinction possible without radius data.
 const SCALED = __SCALED__;
-const R0 = __R0__;                           // rayon monde uniforme (SCALED, RADII == null) ou 1
-const RADII = __RADII__;                     // Float32Array par point, aligné sur OFFSETS, ou null
-// sommets unitaires du marqueur (ex. un triangle -- voir `export_positions_html`'s `marker`),
-// ou null pour le disque historique (`draw()` dessine alors un cercle via `ctx.arc`). Utilisé
-// uniquement pour les points "forme" (voir plus haut) ; un point "point" est toujours un cercle.
+const R0 = __R0__;                           // uniform world radius (SCALED, RADII == null) or 1
+const RADII = __RADII__;                     // Float32Array per point, aligned on OFFSETS, or null
+// unit vertices of the marker (e.g. a triangle -- see `export_positions_html`'s `marker`),
+// or null for the historical disk (`draw()` then draws a circle via `ctx.arc`). Used
+// only for "shape" points (see above); a "point" point is always a circle.
 const MARKER_VERTS = __MARKER_VERTS__;
-// polygone EXPLICITE par point (ex. un triangle déformé, orientation propre à chaque point) --
-// décalages MONDE depuis le centre, PAS des sommets unitaires, dessinés TELS QUELS (pas de
-// slider) : prioritaire sur MARKER_VERTS/RADII quand fourni (voir `export_positions_html`'s
-// `vertex_offsets`). Tous les points d'un export `vertex_offsets` sont des "formes".
+// EXPLICIT polygon per point (e.g. a deformed triangle, with its own orientation per point) --
+// WORLD offsets from the center, NOT unit vertices, drawn AS IS (no
+// slider): takes precedence over MARKER_VERTS/RADII when provided (see `export_positions_html`'s
+// `vertex_offsets`). All points of a `vertex_offsets` export are "shapes".
 const VERT_OFFSETS = __VOFF__;
-const VOFF_K = __VOFF_K__;                   // sommets par polygone quand VERT_OFFSETS est fourni
+const VOFF_K = __VOFF_K__;                   // vertices per polygon when VERT_OFFSETS is provided
 
 const canvas = document.getElementById('c');
 const ctx = canvas.getContext('2d');
@@ -163,32 +163,32 @@ const tSlider = document.getElementById('t');
 const tLabel = document.getElementById('tval');
 const playBtn = document.getElementById('play');
 
-// slider en t in [0,1] -> valeur = RMIN * (RMAX/RMIN)^t (échelle log : pas relatifs égaux partout,
-// contrairement à un slider linéaire où la majeure partie du réglage utile se tasse en bas de la
-// plage -- c'est ce qui causait les "sauts" visuels en bas de plage)
+// slider at t in [0,1] -> value = RMIN * (RMAX/RMIN)^t (log scale: equal relative steps everywhere,
+// unlike a linear slider where most of the useful range gets squeezed at the bottom of the
+// range -- which caused visual "jumps" at the bottom of the range)
 function currentRadius() {
   return RMIN * Math.pow(RMAX / RMIN, parseFloat(rSlider.value));
 }
 function updateLabel() {
-  // toujours un rayon MONDE absolu -- le slider ne pilote plus que les points "point" (les
-  // "formes" gardent leur taille envoyée, voir les consts ci-dessus), donc pas de notion
-  // d'échelle/facteur à afficher ici.
+  // always an absolute WORLD radius -- the slider now only drives "point" points (the
+  // "shapes" keep the size they were sent, see the consts above), so no notion
+  // of scale/factor to display here.
   rLabel.textContent = currentRadius().toPrecision(3);
 }
-if (SCALED) document.getElementById('rname').textContent = 'rayon (points)';
+if (SCALED) document.getElementById('rname').textContent = 'radius (points)';
 
-// vue interactive : zoom multiplicatif + pan en pixels écran, autour de (cx,cy) = centre canvas
+// interactive view: multiplicative zoom + pan in screen pixels, around (cx,cy) = canvas center
 let zoom = 1, panX = 0, panY = 0;
 const MIN_ZOOM = 0.02, MAX_ZOOM = 500;
-let baseScale = 1, cx = 0, cy = 0;           // recalculés à chaque draw() (dépendent de w,h)
+let baseScale = 1, cx = 0, cy = 0;           // recomputed at each draw() (depend on w,h)
 
 let frameIdx = 0;
 
 function draw() {
   const w = canvas.width, h = canvas.height;
   const dark = document.body.classList.contains('dark');
-  // Le fond est peint dans le bitmap du canvas (et pas seulement par CSS), ce qui garantit
-  // aussi le bon rendu lors d'une capture ou d'un export du canvas.
+  // The background is painted into the canvas bitmap (not only by CSS), which also guarantees
+  // correct rendering when capturing or exporting the canvas.
   ctx.fillStyle = dark ? '#1a1a1a' : '#ffffff';
   ctx.fillRect(0, 0, w, h);
   baseScale = Math.min(w, h) / (2 * bound);
@@ -197,24 +197,24 @@ function draw() {
   const scale = baseScale * zoom;
   const ox = cx + panX, oy = cy + panY;
   const mult = currentRadius();
-  const rUniform = Math.max(R0 * mult * scale, 0.4);   // taille écran des points en mode !SCALED
-  const rPoint = Math.max(mult * scale, 0.4);          // taille écran des points "point" en mode SCALED
+  const rUniform = Math.max(R0 * mult * scale, 0.4);   // screen size of points in !SCALED mode
+  const rPoint = Math.max(mult * scale, 0.4);          // screen size of "point" points in SCALED mode
   ctx.fillStyle = dark ? '#ffffff' : '#000000';
   const path = new Path2D();
   const off = OFFSETS[frameIdx], cnt = COUNTS[frameIdx];
-  // vrai si le point `i` (indice GLOBAL, pas relatif à la frame) n'a pas de taille propre --
-  // un "point" (dirac), à dessiner comme un simple disque à la taille du slider, PAS comme
-  // MARKER_VERTS (réservé aux points "forme") -- voir les consts au-dessus.
+  // true if point `i` (GLOBAL index, not relative to the frame) has no size of its own --
+  // a "point" (Dirac), to be drawn as a simple disk at the slider's size, NOT as
+  // MARKER_VERTS (reserved for "shape" points) -- see the consts above.
   function isBarePoint(i) {
     if (!SCALED || VERT_OFFSETS) return false;
     const r = RADII ? RADII[i] : R0;
     return !(r > 0);
   }
   if (VERT_OFFSETS) {
-    // polygone EXPLICITE par point : décalages MONDE (pas unitaires) envoyés directement par
-    // l'appelant -- ex. des triangles déformés dont la forme/orientation varie point par point,
-    // au lieu d'un même gabarit MARKER_VERTS remis à l'échelle par un rayon commun. Dessiné TEL
-    // QUEL : le slider ne s'applique pas (une forme envoyée explicitement n'a pas d'"échelle").
+    // EXPLICIT polygon per point: WORLD offsets (not unit) sent directly by
+    // the caller -- e.g. deformed triangles whose shape/orientation varies point by point,
+    // instead of a single MARKER_VERTS template rescaled by a common radius. Drawn AS
+    // IS: the slider does not apply (an explicitly sent shape has no "scale").
     for (let i = 0; i < cnt; i++) {
       const x = ox + pts[2 * (off + i)] * scale;
       const y = oy - pts[2 * (off + i) + 1] * scale;
@@ -232,15 +232,15 @@ function draw() {
       const x = ox + pts[2 * idx] * scale;
       const y = oy - pts[2 * idx + 1] * scale;
       if (isBarePoint(idx)) {
-        // "point" : pas de donnée de taille -- toujours un disque, taille pilotée par le slider,
-        // jamais MARKER_VERTS (qui n'a de sens que pour un point qui a une vraie taille/forme).
+        // "point": no size data -- always a disk, size driven by the slider,
+        // never MARKER_VERTS (which only makes sense for a point that has a real size/shape).
         path.moveTo(x + rPoint, y);
         path.arc(x, y, rPoint, 0, 2 * Math.PI);
         continue;
       }
-      // "forme" : taille fixée par le modèle (RADII[idx], ou R0 si uniforme), dessinée telle
-      // quelle -- pas de slider ; en mode !SCALED (pas de radii du tout), on retombe sur le
-      // comportement historique (taille du slider, R0 = 1).
+      // "shape": size set by the model (RADII[idx], or R0 if uniform), drawn as
+      // is -- no slider; in !SCALED mode (no radii at all), we fall back to the
+      // historical behavior (slider size, R0 = 1).
       const r = SCALED ? Math.max((RADII ? RADII[idx] : R0) * scale, 0.4) : rUniform;
       if (MARKER_VERTS) {
         path.moveTo(x + MARKER_VERTS[0][0] * r, y - MARKER_VERTS[0][1] * r);
@@ -262,7 +262,7 @@ function resize() {
   draw();
 }
 
-// zoome d'un facteur `factor` en gardant le point écran (px,py) fixe à l'écran
+// zooms by a factor `factor` keeping the screen point (px,py) fixed on screen
 function zoomAt(px, py, factor) {
   const newZoom = Math.min(Math.max(zoom * factor, MIN_ZOOM), MAX_ZOOM);
   const applied = newZoom / zoom;
@@ -280,9 +280,9 @@ function resetView() {
 rSlider.addEventListener('input', () => { updateLabel(); draw(); });
 window.addEventListener('resize', resize);
 
-// molette/trackpad : le navigateur reporte un pincement trackpad comme un `wheel` avec
-// ctrlKey=true (et deltaY ~ l'ampleur du pincement) -- convention Ctrl+molette = zoom sur
-// souris classique aussi. Sans ctrlKey, un scroll (souris ou 2 doigts trackpad) = pan.
+// wheel/trackpad: the browser reports a trackpad pinch as a `wheel` with
+// ctrlKey=true (and deltaY ~ the magnitude of the pinch) -- convention Ctrl+wheel = zoom on a
+// regular mouse too. Without ctrlKey, a scroll (mouse or 2-finger trackpad) = pan.
 canvas.addEventListener('wheel', (e) => {
   e.preventDefault();
   if (e.ctrlKey || e.metaKey) {
@@ -294,7 +294,7 @@ canvas.addEventListener('wheel', (e) => {
   }
 }, { passive: false });
 
-// glisser à la souris = pan
+// mouse drag = pan
 let dragging = false, lastX = 0, lastY = 0;
 canvas.style.cursor = 'grab';
 canvas.addEventListener('mousedown', (e) => {
@@ -312,7 +312,7 @@ window.addEventListener('mouseup', () => { dragging = false; canvas.style.cursor
 
 canvas.addEventListener('dblclick', resetView);
 
-// écrans tactiles : 1 doigt = pan, 2 doigts = pincement (zoom) + pan
+// touch screens: 1 finger = pan, 2 fingers = pinch (zoom) + pan
 let touch = null;
 canvas.addEventListener('touchstart', (e) => {
   e.preventDefault();
@@ -349,7 +349,7 @@ canvas.addEventListener('touchend', (e) => {
   else if (e.touches.length === 1) touch = { mode: 'pan', x: e.touches[0].clientX, y: e.touches[0].clientY };
 });
 
-// barre de temps + play/pause (uniquement si plusieurs frames)
+// time bar + play/pause (only if several frames)
 let playing = false;
 let playTimer = null;
 
@@ -385,7 +385,7 @@ if (nFrames > 1) {
   playBtn.addEventListener('click', togglePlay);
 }
 
-// raccourcis clavier -- modifiers (Maj/Ctrl) = pas plus large, pour naviguer/régler plus vite
+// keyboard shortcuts -- modifiers (Shift/Ctrl) = larger step, to navigate/adjust faster
 function pick(e, normal, big, huge) {
   if (e.ctrlKey || e.metaKey) return huge;
   if (e.shiftKey) return big;
@@ -447,7 +447,7 @@ window.addEventListener('keydown', (e) => {
   }
 });
 
-// Mode sombre : préférence système au chargement, puis bascule au raccourci [d].
+// Dark mode: system preference at load, then toggled with the [d] shortcut.
 (function() {
   const darkML = window.matchMedia('(prefers-color-scheme: dark)');
   let curDark = darkML.matches;
@@ -456,7 +456,7 @@ window.addEventListener('keydown', (e) => {
     document.body.classList.toggle('dark', on);
     document.body.dataset.theme = on ? 'dark' : 'light';
     const m = document.getElementById('modeLabel');
-    if (m) m.textContent = on ? 'sombre' : 'clair';
+    if (m) m.textContent = on ? 'dark' : 'light';
     draw();
   }
   setTheme(curDark);
@@ -466,12 +466,12 @@ window.addEventListener('keydown', (e) => {
   });
 })();
 
-// dernière frame par défaut (l'état final/convergé, ce qu'on veut voir en premier)
+// last frame by default (the final/converged state, what we want to see first)
 updateLabel();
 setFrame(nFrames - 1);
 resize();
 if (nFrames > 1) {
-  // focus la barre de temps : les flèches gauche/droite la pilotent immédiatement
+  // focus the time bar: the left/right arrows drive it immediately
   tSlider.focus();
 }
 </script>
@@ -481,12 +481,12 @@ if (nFrames > 1) {
 
 
 def _as_frames( positions ):
-    """Normalise `positions` en une liste de frames `np.float32[n_t, 2]` (une seule frame pour
-    l'usage historique, plusieurs pour une animation) :
-    - Tensor/array [n,2]                       -> une frame.
-    - Tensor/array [T,n,2] (n fixe)             -> T frames.
-    - séquence (list/tuple) de Tensor/array [n_t,2], n_t pouvant varier d'une frame à l'autre
-      (ex. les étages d'un `Reconstruction.multiscale`) -> une frame par élément.
+    """Normalizes `positions` into a list of `np.float32[n_t, 2]` frames (a single frame for
+    historical usage, several for an animation):
+    - Tensor/array [n,2]                       -> one frame.
+    - Tensor/array [T,n,2] (fixed n)            -> T frames.
+    - sequence (list/tuple) of Tensor/array [n_t,2], with n_t possibly varying from one frame to the next
+      (e.g. the stages of a `Reconstruction.multiscale`) -> one frame per element.
     """
     def to_np( x ):
         arr = x.raw if isinstance( x, Tensor ) else np.asarray( x )
@@ -499,25 +499,25 @@ def _as_frames( positions ):
             return [ to_np( positions ) ]
         if positions.ndim == 3:
             return [ to_np( positions[ t ] ) for t in range( positions.shape[ 0 ] ) ]
-        raise ValueError( f"positions: ndim inattendu { positions.ndim } (attendu 2 ou 3)" )
+        raise ValueError( f"positions: unexpected ndim { positions.ndim } (expected 2 or 3)" )
     if isinstance( positions, ( list, tuple ) ):
         if len( positions ) == 0:
-            raise ValueError( "positions: séquence vide" )
+            raise ValueError( "positions: empty sequence" )
         first = to_np( positions[ 0 ] )
         if first.ndim == 1 and first.shape[ 0 ] == 2:
-            # `positions` est directement une liste de paires (x, y) -- une seule frame.
+            # `positions` is directly a list of (x, y) pairs -- a single frame.
             return [ to_np( positions ) ]
         return [ to_np( f ) for f in positions ]
-    raise TypeError( f"positions: type non supporté { type( positions ) }" )
+    raise TypeError( f"positions: unsupported type { type( positions ) }" )
 
 
 def _as_radii( radii, frames ):
-    """Normalise `radii` en `( uniform, per_point )` :
-    - `uniform` : le rayon monde commun (float) quand il n'y en a qu'un -- rien n'est encodé.
-    - `per_point` : une liste de `np.float32[n_t]` alignée sur `frames`, ou `None`.
+    """Normalizes `radii` into `( uniform, per_point )`:
+    - `uniform`: the common world radius (float) when there is only one -- nothing is encoded.
+    - `per_point`: a list of `np.float32[n_t]` aligned on `frames`, or `None`.
 
-    Accepte un scalaire (rayon unique, cas d'un modèle à rayon fixe), un tableau `[n]` réutilisé
-    pour toutes les frames, ou une séquence d'un tableau par frame.
+    Accepts a scalar (single radius, the case of a fixed-radius model), an `[n]` array reused
+    for all frames, or a sequence of one array per frame.
     """
     def to_np( x ):
         arr = x.raw if isinstance( x, Tensor ) else np.asarray( x )
@@ -526,21 +526,21 @@ def _as_radii( radii, frames ):
     if np.isscalar( radii ):
         return float( radii ), None
 
-    # une séquence d'un tableau par frame -- distinguée d'un simple tableau de rayons par point
-    # par le fait que ses éléments ne sont pas des scalaires.
+    # a sequence of one array per frame -- distinguished from a simple array of per-point radii
+    # by the fact that its elements are not scalars.
     if isinstance( radii, ( list, tuple ) ) and len( radii ) == len( frames ) \
             and not np.isscalar( radii[ 0 ] ):
         per_frame = [ to_np( r ) for r in radii ]
     else:
         shared = to_np( radii )
-        if len( shared ) == 1:                        # rayon unique passé sous forme de tableau
+        if len( shared ) == 1:                        # single radius passed as an array
             return float( shared[ 0 ] ), None
         per_frame = [ shared for _ in frames ]
 
     for f, r in zip( frames, per_frame ):
         if len( r ) != len( f ):
-            raise ValueError( f"radii: { len( r ) } rayons pour { len( f ) } points" )
-    # un tableau constant se réduit au cas uniforme (aucun bloc de rayons à encoder)
+            raise ValueError( f"radii: { len( r ) } radii for { len( f ) } points" )
+    # a constant array reduces to the uniform case (no block of radii to encode)
     flat = np.concatenate( per_frame ) if per_frame else np.zeros( 0, dtype = np.float32 )
     if len( flat ) and np.all( flat == flat[ 0 ] ):
         return float( flat[ 0 ] ), None
@@ -599,64 +599,64 @@ def export_positions_html(
     title: str = "reconstruction", seed: int = 0, fps: float = 5.0,
     radii = None, marker: str | list = "circle", vertex_offsets = None,
 ):
-    """Écrit `out_path`, une page HTML autonome affichant `positions` comme un disque par point
-    sur un <canvas> plein écran, avec un slider (échelle LOG) pour ajuster le rayon des disques
-    (en unités MONDE, pas pixels -- reste cohérent quelle que soit la taille de la fenêtre).
-    `extent` fixe la fenêtre affichée ([-extent/2, extent/2]^2, mêmes conventions que `Sinogram`).
-    `radius_range` doit être strictement positif (bornes du slider log) et encadrer
+    """Writes `out_path`, a standalone HTML page displaying `positions` as one disk per point
+    on a full-screen <canvas>, with a slider (LOG scale) to adjust the radius of the disks
+    (in WORLD units, not pixels -- stays consistent whatever the window size).
+    `extent` sets the displayed window ([-extent/2, extent/2]^2, same conventions as `Sinogram`).
+    `radius_range` must be strictly positive (bounds of the log slider) and bracket
     `point_radius`.
 
-    `positions` : soit UNE frame -- Tensor/array [n,2] (comportement historique) --, soit
-    PLUSIEURS frames pour illustrer un déplacement au fil du temps (ex. la convergence d'une
-    reconstruction) : Tensor/array [T,n,2] (n fixe), ou séquence de Tensor/array [n_t,2] --
-    `n_t` peut varier d'une frame à l'autre (ex. les étages de `Reconstruction.multiscale`, qui
-    raffinent progressivement le nombre de diracs). Avec plusieurs frames, la page ajoute une
-    barre de temps + un bouton play/pause (vitesse fixée par `fps`).
+    `positions`: either ONE frame -- Tensor/array [n,2] (historical behavior) --, or
+    SEVERAL frames to illustrate a movement over time (e.g. the convergence of a
+    reconstruction): Tensor/array [T,n,2] (fixed n), or a sequence of Tensor/array [n_t,2] --
+    `n_t` may vary from one frame to the next (e.g. the stages of `Reconstruction.multiscale`, which
+    progressively refine the number of Diracs). With several frames, the page adds a
+    time bar + a play/pause button (speed set by `fps`).
 
-    `max_points` : sous-échantillonne au-delà de ce compte, PAR FRAME -- un fichier HTML à 1e7
-    points encoderait ~80 Mo de coordonnées (base64 ~+33%), lourd à charger pour un gain visuel
-    nul (les disques se recouvrent de toute façon bien avant cette densité à l'écran). Si toutes
-    les frames ont le même nombre de points, le sous-échantillonnage utilise les MÊMES indices
-    pour toutes les frames (un point animé garde son identité visuelle d'une frame à l'autre) ;
-    sinon (nombre de points variable, ex. multiscale) chaque frame est sous-échantillonnée
-    indépendamment.
+    `max_points`: subsamples beyond this count, PER FRAME -- an HTML file with 1e7
+    points would encode ~80 MB of coordinates (base64 ~+33%), heavy to load for no
+    visual gain (the disks overlap well before that density on screen anyway). If all
+    frames have the same number of points, the subsampling uses the SAME indices
+    for all frames (an animated point keeps its visual identity from one frame to the next);
+    otherwise (variable number of points, e.g. multiscale) each frame is subsampled
+    independently.
 
-    `radii` : le rayon MONDE des points, quand ils en ont un qui fait partie du modèle et non du
-    seul affichage (typiquement la reconstruction par disques de `disks.py`, à rayon fixé). Un
-    scalaire (rayon commun), un tableau `[n]` (par point, réutilisé pour toutes les frames), ou
-    une séquence d'un tableau par frame. Ce rayon est alors EXPORTÉ et sert au dessin, à la taille
-    EXACTE fournie -- le slider ne s'y applique PAS. `None` (défaut), ou un rayon de 0 pour tel
-    point : ce point n'a pas de taille propre (un "point", ex. un dirac) -- il est toujours
-    dessiné comme un simple disque (jamais `marker`), à la taille du slider (le slider EST son
-    rayon, comportement historique). Les deux peuvent cohabiter dans le même export : un point
-    par point, pas un mode global -- utile pour un nuage qui interleave des étages diracs (rayon
-    0) et des étages disques (rayon réel), voir `optim.recorder.Recorder.frame_radii`.
+    `radii`: the WORLD radius of the points, when they have one that is part of the model and not
+    just of the display (typically the disk reconstruction of `disks.py`, with fixed radius). A
+    scalar (common radius), an `[n]` array (per point, reused for all frames), or
+    a sequence of one array per frame. This radius is then EXPORTED and used for drawing, at the
+    EXACT size provided -- the slider does NOT apply to it. `None` (default), or a radius of 0 for a given
+    point: this point has no size of its own (a "point", e.g. a Dirac) -- it is always
+    drawn as a simple disk (never `marker`), at the slider's size (the slider IS its
+    radius, historical behavior). Both can coexist in the same export: per
+    point, not a global mode -- useful for a cloud that interleaves Dirac stages (radius
+    0) and disk stages (real radius), see `optim.recorder.Recorder.frame_radii`.
 
-    `marker` : la FORME dessinée par les points qui ONT un rayon (`radii` > 0) -- `"circle"`
-    (défaut, historique) ou `"triangle"` (voir `MARKER_SHAPES`), ou directement une liste de
-    sommets `[(x0,y0), (x1,y1), ...]` (coordonnées UNITAIRES, cercle circonscrit de rayon 1,
-    sommet en haut) pour un polygone arbitraire -- le rendu JS (`MARKER_VERTS`) ne suppose PAS 3
-    sommets, un triangle n'est qu'un cas particulier. Chaque sommet est mis à l'échelle par le
-    rayon EXACT du point (`RADII`/`R0`, pas de slider) et translaté sur sa position ; sans
-    `radii` du tout (mode historique), s'applique à TOUS les points, à la taille du slider.
-    Ignoré si `vertex_offsets` est fourni.
+    `marker`: the SHAPE drawn by the points that HAVE a radius (`radii` > 0) -- `"circle"`
+    (default, historical) or `"triangle"` (see `MARKER_SHAPES`), or directly a list of
+    vertices `[(x0,y0), (x1,y1), ...]` (UNIT coordinates, circumscribed circle of radius 1,
+    apex up) for an arbitrary polygon -- the JS rendering (`MARKER_VERTS`) does NOT assume 3
+    vertices, a triangle is just a special case. Each vertex is scaled by the
+    EXACT radius of the point (`RADII`/`R0`, no slider) and translated to its position; without
+    `radii` at all (historical mode), it applies to ALL points, at the slider's size.
+    Ignored if `vertex_offsets` is provided.
 
-    `vertex_offsets` : polygone EXPLICITE par point, en unités MONDE, quand `marker` (un même
-    gabarit unitaire remis à l'échelle par un rayon commun) ne suffit plus -- typiquement des
-    triangles DÉFORMÉS (non équilatéraux, orientés différemment par point) calculés par le
-    modèle lui-même plutôt que déduits d'un centre + rayon. `[n, k, 2]` (k sommets, décalage
-    MONDE depuis le centre du point, PAS des coordonnées unitaires) réutilisé pour toutes les
-    frames, ou une séquence d'un tableau `[n_t, k, 2]` par frame (`k` doit rester le même
-    partout). Dessiné à la taille EXACTE envoyée, le slider ne s'y applique pas -- TOUS les
-    points d'un export `vertex_offsets` sont des "formes" (pas de mélange point/forme possible
-    ici). Prioritaire sur `marker`/`radii` quand fourni.
+    `vertex_offsets`: EXPLICIT polygon per point, in WORLD units, when `marker` (a single unit
+    template rescaled by a common radius) is no longer enough -- typically DEFORMED
+    triangles (non-equilateral, oriented differently per point) computed by the
+    model itself rather than deduced from a center + radius. `[n, k, 2]` (k vertices, WORLD
+    offset from the point's center, NOT unit coordinates) reused for all
+    frames, or a sequence of one `[n_t, k, 2]` array per frame (`k` must remain the same
+    everywhere). Drawn at the EXACT size sent, the slider does not apply -- ALL
+    points of a `vertex_offsets` export are "shapes" (no point/shape mixing possible
+    here). Takes precedence over `marker`/`radii` when provided.
     """
     frames = _as_frames( positions )
     uniform_r, per_point_r = ( None, None ) if radii is None else _as_radii( radii, frames )
     per_point_vo = _as_vertex_offsets( vertex_offsets, frames )
     counts = [ len( f ) for f in frames ]
 
-    # sous-échantillonnage : rayons/décalages suivent EXACTEMENT les mêmes indices que les positions.
+    # subsampling: radii/offsets follow EXACTLY the same indices as the positions.
     def take( seq, idx_per_frame ):
         return [ a if i is None else a[ i ] for a, i in zip( seq, idx_per_frame ) ]
 
@@ -697,10 +697,10 @@ def export_positions_html(
         voff_k = flat_vo.shape[ 1 ]
         voff_js = 'decodeF32("' + base64.b64encode( flat_vo.tobytes() ).decode( "ascii" ) + '")'
 
-    # `point_radius` = position initiale du slider -- TOUJOURS un rayon monde absolu (0.1 par
-    # défaut), qu'il pilote tous les points (mode historique, pas de `radii`) ou seulement les
-    # points "point" (rayon 0/absent) d'un export mixte -- les points "forme" ignorent le slider.
-    scaled = radii is not None or vertex_offsets is not None   # -> `SCALED` JS (voir `_HTML`)
+    # `point_radius` = initial slider position -- ALWAYS an absolute world radius (0.1 by
+    # default), whether it drives all points (historical mode, no `radii`) or only the
+    # "point" points (radius 0/absent) of a mixed export -- "shape" points ignore the slider.
+    scaled = radii is not None or vertex_offsets is not None   # -> JS `SCALED` (see `_HTML`)
     if point_radius is None:
         point_radius = 0.1
     if radius_range is None:
@@ -730,5 +730,5 @@ def export_positions_html(
         f.write( html )
     # total = sum( counts )
     print( f"OUTPUT: { out_path }" )
-    # print( f"html sauvé: { out_path } ({ len( frames ) } frame(s), { total } points au total, "
-    #        f"{ len( html ) / 1e6:.1f} Mo)" )
+    # print( f"html saved: { out_path } ({ len( frames ) } frame(s), { total } points in total, "
+    #        f"{ len( html ) / 1e6:.1f} MB)" )

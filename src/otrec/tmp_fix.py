@@ -24,15 +24,15 @@ theme_js = [
 # Find line with updateLabel() near the end and insert theme detection before it
 new_lines = []
 for i, line in enumerate(lines):
-    # Insert after resize() closing, before "// dernière frame par défaut"  
+    # Insert after resize() closing, before "// last frame by default"  
     stripped = line.strip()
     if "resize();" in stripped and not stripped.startswith('//'):
         new_lines.append(line)  # keep resize();
-        # Now find the comment about "dernière frame" on next non-empty line(s)  
+        # Now find the comment about "last frame" on next non-empty line(s)  
         j = i + 1
         while j < len(lines) and not lines[j].strip():
             j += 1
-        if j < len(lines) and 'dernière frame' in lines[j]:
+        if j < len(lines) and 'last frame' in lines[j]:
             # Add theme JS before this comment
             new_lines.extend(theme_js)
     new_lines.append(line)

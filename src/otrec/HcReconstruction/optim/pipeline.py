@@ -115,13 +115,13 @@ class Disks(ModelSpec):
 
 def disk(*, radius: float | None = None, radius_factor: float | None = None,
         nb_pixels: int | None = None) -> Disks:
-    """The DISKS model with the true circular-chord profile (jax backend only)."""
+    """The DISKS model with the true circular-chord profile."""
     return Disks("disk", radius=radius, radius_factor=radius_factor, nb_pixels=nb_pixels)
 
 
 def triangle(*, radius: float | None = None, radius_factor: float | None = None,
             nb_pixels: int | None = None) -> Disks:
-    """The DISKS model with the tent/triangle profile (jax AND sycl backends)."""
+    """The DISKS model with the tent/triangle profile ."""
     return Disks("triangle", radius=radius, radius_factor=radius_factor, nb_pixels=nb_pixels)
 
 
@@ -131,8 +131,7 @@ class Polygon(ModelSpec):
     shape. Distinct from `Disks(shape="triangle")`: that is a radial density
     profile on an otherwise circularly-symmetric disk (same silhouette as
     `Disks(shape="disk")`), this is an actual polygon with a real silhouette
-    that depends on the projection angle. Jax backend only (`use_polygon`
-    raises for `backend="sycl"`, via `cost.factory.build_cost_model`).
+    that depends on the projection angle.
 
     `radius`/`radius_factor` — same "fixed, or shrinks with point count"
     choice as `Disks`.

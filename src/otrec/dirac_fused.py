@@ -1,27 +1,27 @@
-"""Référence SYCL (CPU pour l'instant) du coût + gradient du modèle DIRACS (`models.DiracModel`),
-en UN SEUL `driver.call` fwd-only -- sans `backward`, donc sans passer par l'autodiff Jax : le
-gradient est écrit directement par le kernel, formule fermée `(point - barycentre) * direction`,
-au lieu d'un `jax.grad` à travers `_pure_jax_cost1d.cost_1d_ot` (le chemin par défaut,
-`Image.try_update_sdotplan1d`) ou du couple fwd/bwd `SdotPlan1d.cxx` (le chemin C++ général).
+"""Fused reference (loom `FfiCode` kernel, CPU for now) of the cost + gradient of the DIRACS model (`models.DiracModel`),
+in a SINGLE fwd-only `driver.call` -- without `backward`, hence without going through Jax autodiff: the
+gradient is written directly by the kernel, closed formula `(point - barycenter) * direction`,
+instead of a `jax.grad` through `_pure_jax_cost1d.cost_1d_ot` (the default path,
+`Image.try_update_sdotplan1d`) or the fwd/bwd pair of `SdotPlan1d.cxx` (the general C++ path).
 
-Motivation : comparer la vitesse d'un noyau qui fusionne les DEUX passes (coût ET gradient, la
-même formule que `SdotPlan1d.cxx::sweep_outputs_bwd`'s barycentre-recompute branch, mais calculé
-UNE FOIS au lieu de deux) contre le pipeline pur Jax actuellement utilisé par
-`Reconstruction.diracs`. Volontairement plus simple que `SdotPlan1d` : un seul work-item par angle
-(même tri radix LSD par paquet clé+index que `SdotPlan1d.cxx::sort_diracs`, mais SANS sa coopération
-de groupe -- un seul thread suffit puisqu'il traite tout l'angle -- et pas la marche
-`udp_at`/`cell_cum_mass` -- un simple `udp_start` séquentiel suffit pour la même raison).
-Repousser la coopération de groupe à une étape ultérieure si cette référence s'avère prometteuse
-à plus grande échelle.
+Motivation: compare the speed of a kernel that fuses BOTH passes (cost AND gradient, the
+same formula as `SdotPlan1d.cxx::sweep_outputs_bwd`'s barycentre-recompute branch, but computed
+ONCE instead of twice) against the pure-Jax pipeline currently used by
+`Reconstruction.diracs`. Deliberately simpler than `SdotPlan1d`: a single work-item per angle
+(same LSD radix sort on a key+index packet as `SdotPlan1d.cxx::sort_diracs`, but WITHOUT its group
+cooperation -- a single thread suffices since it processes the whole angle -- and not the
+`udp_at`/`cell_cum_mass` walk -- a simple sequential `udp_start` suffices for the same reason).
+Defer group cooperation to a later stage if this reference proves promising
+at larger scale.
 
-Réutilise `ProjectedSumOfDiracs`/`Image` TELS QUELS (mêmes structs C++, mêmes méthodes
-`position(i)`/`udp_start`/`udp_cont` que `SdotPlan1d.cxx`) -- seule l'orchestration (tri + balayage
-+ dispersion du gradient) est nouvelle.
+Reuses `ProjectedSumOfDiracs`/`Image` AS IS (same C++ structs, same `position(i)`/`udp_start`/
+`udp_cont` methods as `SdotPlan1d.cxx`) -- only the orchestration (sort + sweep
++ gradient scatter) is new.
 
-S'est avéré assez prometteur (10-30x plus rapide que le chemin Jax mesuré sur le poumon, voir
-`benchmarks/execution_speed/benchmark_fused.py`) pour être BRANCHÉ : `models.DiracModel.value_and_grad`
-expose `diracs_cost_grad` avec le même contrat que `optimizers.FusedLBFGS` attend, et
-`Reconstruction.diracs( backend = "sycl" )` route dessus (voir `experiments/lung_alveoli.py`).
+Turned out promising enough (10-30x faster than the Jax path measured on the lung, see
+`benchmarks/execution_speed/benchmark_fused.py`) to be WIRED IN: `models.DiracModel.value_and_grad`
+exposes `diracs_cost_grad` with the same contract that `optimizers.FusedLBFGS` expects, and
+`Reconstruction.diracs( backend = "fused" )` routes to it (see `experiments/lung_alveoli.py`).
 """
 import numpy as np
 
@@ -32,26 +32,26 @@ from sdot.distributions.ProjectedSumOfDiracs import ProjectedSumOfDiracs
 
 from .Sinogram import Sinogram
 
-# nombre max de directions du sous-espace de `subspace_hessian` -- voir sa docstring. Fixe (pas un
-# `ShapeVar` runtime) : un seul noyau compilé sert tous les appels, `optimizers.SubspaceNewtonLBFGS`
-# zero-paddant au-delà du nombre de directions réellement stockées.
+# max number of directions of the `subspace_hessian` subspace -- see its docstring. Fixed (not a
+# runtime `ShapeVar`): a single compiled kernel serves all calls, `optimizers.SubspaceNewtonLBFGS`
+# zero-padding beyond the number of directions actually stored.
 MAX_DIRS = 5
 
 
 def diracs_cost_grad( points, sinogram: Sinogram ):
-    """`(cost, grad)` du modèle DIRACS pour `points` (`[n,2]`, Tensor ou tableau) face à
-    `sinogram`, calculés par le kernel SYCL fusionné ci-dessus -- `cost` un flottant Python,
-    `grad` un tableau numpy `[n,2]` (même convention de signe que `jax.grad(model.cost)`, un pas
-    de descente de gradient fait donc `points - lr * grad`).
+    """`(cost, grad)` of the DIRACS model for `points` (`[n,2]`, Tensor or array) against
+    `sinogram`, computed by the fused kernel above -- `cost` a Python float,
+    `grad` a numpy array `[n,2]` (same sign convention as `jax.grad(model.cost)`, so a gradient
+    descent step is `points - lr * grad`).
     """
     pts = points if isinstance( points, Tensor ) else RealTensor( points )
 
-    # `src`/`dst` normalisés à masse 1 -- exactement ce que fait `SdotPlan1d.__init__` avant de
-    # balayer (voir sa docstring) : sans ça la marche `udp_cont` (dont les prises `w` par dirac
-    # doivent épuiser exactement la masse totale de l'image) ne balaierait pas l'image en entier.
-    # `src` n'a pas de poids explicites -> `normalized_version()` donnerait des poids UNIFORMES
-    # `1 / n`, exactement ce que le kernel calcule lui-même (`w = TF(1)/TF(n)`) -- inutile de
-    # matérialiser un tenseur de poids rien que pour ça.
+    # `src`/`dst` normalized to mass 1 -- exactly what `SdotPlan1d.__init__` does before
+    # sweeping (see its docstring): without it the `udp_cont` walk (whose per-dirac `w` takes
+    # must exactly exhaust the total mass of the image) would not sweep the whole image.
+    # `src` has no explicit weights -> `normalized_version()` would give UNIFORM weights
+    # `1 / n`, exactly what the kernel computes itself (`w = TF(1)/TF(n)`) -- no need to
+    # materialize a weight tensor just for that.
     src = ProjectedSumOfDiracs( points = pts, normal = sinogram.normals_t,
                                 batch_axes = [ sinogram.num_angle ] )
     dst = sinogram.batched_image().normalized_version()
@@ -65,9 +65,9 @@ def diracs_cost_grad( points, sinogram: Sinogram ):
         "diracs_fused_cost_grad",
         FfiCode.per_item(
             includes = [ "loom/support/atomic_add.h" ],
-            # ( `grad` est PARTAGE -- les points sont les memes a tous les angles -- et accumule par
-            # `atomic_add`, donc il doit partir de zero. Plus besoin de le dire ici : toute sortie
-            # flottante partagee d'un appel batche est semee a zero d'office, voir
+            # ( `grad` is SHARED -- the points are the same at all angles -- and accumulated by
+            # `atomic_add`, so it must start from zero. No need to say so here anymore: every shared
+            # floating-point output of a batched call is seeded with zero automatically, see
             # `CallArg_Tensor.cpp_seed_member`. )
             code = """
             {
@@ -75,25 +75,25 @@ def diracs_cost_grad( points, sinogram: Sinogram ):
                 auto order = scratch.sorted_idx( batch_index );
                 auto tmp   = scratch.radix_tmp( batch_index );
 
-                // vue tranchée à CET angle, construite UNE FOIS -- `inputs.src( batch_index )` referait
-                // sinon cette résolution (normale par angle, etc.) à CHAQUE comparaison du tri
-                // (O(n log n) fois) et à chaque pas de la marche `udp_cont` (O(n) fois).
+                // view sliced at THIS angle, built ONCE -- `inputs.src( batch_index )` would otherwise redo
+                // this resolution (per-angle normal, etc.) at EACH comparison of the sort
+                // (O(n log n) times) and at each step of the `udp_cont` walk (O(n) times).
                 auto s = inputs.src( batch_index );
 
-                // projection à la volée (pas de tableau [nb_angles, n] matérialisé) : la même
-                // méthode que le chemin C++ général, `ProjectedSumOfDiracs::position`.
+                // on-the-fly projection (no materialized [nb_angles, n] array): the same
+                // method as the general C++ path, `ProjectedSumOfDiracs::position`.
                 auto proj = [&]( SI i ) { return s.position( i ); };
 
-                // Tri radix LSD itératif O(n), PAS de comparateur (pas de récursion -- même
-                // contrainte SSCP qui a écarté std::sort/introsort, voir SdotPlan1d.cxx::sort_diracs,
-                // dont ce bloc est une version simplifiée SANS coopération de groupe, un seul
-                // work-item traitant tout l'angle). On PAQUETTE, dans chaque case int64 de `order`,
-                // une clé float32 ordonnée (bits IEEE retournés pour préserver l'ordre) dans les
-                // bits hauts + l'indice du dirac dans les bits bas, puis on trie CE PAQUET
-                // directement (contigu, sans indirection) au lieu de comparer indirectement via
-                // `proj( order( i ) )` -- ce qui recalculait le produit scalaire de la projection à
-                // CHAQUE comparaison du tri par tas précédent (O(n log n) fois) au lieu d'une seule
-                // fois par dirac ici.
+                // Iterative O(n) LSD radix sort, NO comparator (no recursion -- same
+                // SSCP constraint that ruled out std::sort/introsort, see SdotPlan1d.cxx::sort_diracs,
+                // of which this block is a simplified version WITHOUT group cooperation, a single
+                // work-item processing the whole angle). We PACK, in each int64 slot of `order`,
+                // an ordered float32 key (IEEE bits flipped to preserve ordering) in the
+                // high bits + the dirac index in the low bits, then sort THIS PACKET
+                // directly (contiguous, no indirection) instead of comparing indirectly via
+                // `proj( order( i ) )` -- which recomputed the projection dot product at
+                // EACH comparison of the previous heap sort (O(n log n) times) instead of once
+                // per dirac here.
                 for ( SI i = 0; i < n; ++i ) {
                     const float f = float( proj( i ) );
                     uint32_t u = __builtin_bit_cast( uint32_t, f );
@@ -104,7 +104,7 @@ def diracs_cost_grad( points, sinogram: Sinogram ):
                 constexpr int NB_BITS    = 8;
                 constexpr int NB_BUCKETS = 1 << NB_BITS;
                 constexpr int NB_PASSES  = 32 / NB_BITS;
-                static_assert( NB_PASSES % 2 == 0 ); // le résultat final doit retomber dans `order`
+                static_assert( NB_PASSES % 2 == 0 ); // the final result must land back in `order`
 
                 auto radix_pass = [&]( auto &&from, auto &&to, int shift ) {
                     SI count[ NB_BUCKETS ] = { 0 };
@@ -132,16 +132,16 @@ def diracs_cost_grad( points, sinogram: Sinogram ):
                     using TF = DECAYED_TYPE_OF( img.values )::TF;
                     const TF w = TF( 1 ) / TF( n );
 
-                    // un seul work-item pour tout l'angle -> pas besoin de `udp_at`/`cell_cum_mass`
-                    // (la marche part du tout début, comme `udp_at( cell_cum_mass, 0 )` le ferait).
+                    // a single work-item for the whole angle -> no need for `udp_at`/`cell_cum_mass`
+                    // (the walk starts from the very beginning, as `udp_at( cell_cum_mass, 0 )` would).
                     auto udp = img.udp_start();
                     TF local_cost = 0;
                     for ( SI k = 0; k < n; ++k ) {
-                        const SI di = order( k ) & 0xFFFFFFFFll; // décode : bits bas = indice d'origine
+                        const SI di = order( k ) & 0xFFFFFFFFll; // decode: low bits = original index
                         const TF p = proj( di );
 
-                        // coût ET barycentre (premier moment) EN UNE SEULE marche -- pas de
-                        // buffer `barycenters` [nb_angles, n], pas de second passage bwd.
+                        // cost AND barycenter (first moment) IN A SINGLE walk -- no
+                        // `barycenters` buffer [nb_angles, n], no second bwd pass.
                         TF moment = 0;
                         img.udp_cont( udp, w, [&]( auto &&item ) {
                             local_cost += item.w2_dist( p );
@@ -150,9 +150,9 @@ def diracs_cost_grad( points, sinogram: Sinogram ):
                         const TF b = moment / w;
 
                         // d outputs.cost / d position(i) = 2 w (p - b) ; d position / d point = normal
-                        // (voir `ProjectedSumOfDiracs::add_position_grad`) -- même formule, mais
-                        // écrite directement dans `outputs.grad` (sortie brute) plutôt que via l'indirection
-                        // `grad_src` que le protocole de différentiation Jax construirait pour un bwd.
+                        // (see `ProjectedSumOfDiracs::add_position_grad`) -- same formula, but
+                        // written directly into `outputs.grad` (raw output) rather than via the
+                        // `grad_src` indirection that the Jax differentiation protocol would build for a bwd.
                         const TF grad_s = TF( 2 ) * w * ( p - b );
                         atomic_add( outputs.grad( num_dirac = di, proj_dim = 0 ).ref(),
                                     TF( grad_s * TF( s.normal( proj_dim = 0 ) ) ) );
@@ -177,12 +177,12 @@ def diracs_cost_grad( points, sinogram: Sinogram ):
 
 
 def diracs_cost( points, sinogram: Sinogram ):
-    """`cost` SEUL du modèle DIRACS -- MÊME formule et MÊME kernel de tri + balayage que
-    `diracs_cost_grad` ci-dessus, mais sans le calcul de gradient (pas de moment/barycentre par
-    dirac, pas de dispersion atomique) : pour les évaluations "coût seul" d'une recherche de pas
-    (voir `experiments.lung_alveoli._parabolic_bracket`), où le gradient serait de toute façon
-    jeté. Économise le calcul de `first_moment()` et les `atomic_add` par dirac -- le tri reste
-    identique (c'est lui qui domine le coût, voir `otplan1d-kernel-profile`).
+    """`cost` ALONE of the DIRACS model -- SAME formula and SAME sort + sweep kernel as
+    `diracs_cost_grad` above, but without the gradient computation (no moment/barycenter per
+    dirac, no atomic scatter): for the "cost only" evaluations of a line search
+    (see `experiments.lung_alveoli._parabolic_bracket`), where the gradient would be thrown away
+    anyway. Saves the `first_moment()` computation and the per-dirac `atomic_add`s -- the sort stays
+    identical (it is what dominates the cost, see `otplan1d-kernel-profile`).
     """
     pts = points if isinstance( points, Tensor ) else RealTensor( points )
 
@@ -270,25 +270,25 @@ def diracs_cost( points, sinogram: Sinogram ):
 
 
 def subspace_hessian( points, directions, sinogram: Sinogram ):
-    """`(H, b)` -- Hessienne `[MAX_DIRS,MAX_DIRS]` et gradient `[MAX_DIRS]` du modèle DIRACS
-    RESTREINT au sous-espace engendré par `directions` (`[MAX_DIRS,n,2]`, zero-paddé au-delà du
-    nombre de directions réellement actives -- voir `optimizers.SubspaceNewtonLBFGS`), c-à-d de
-    `a -> loss( points + sum_i a_i * directions[i] )` évalués en `a = 0`.
+    """`(H, b)` -- Hessian `[MAX_DIRS,MAX_DIRS]` and gradient `[MAX_DIRS]` of the DIRACS model
+    RESTRICTED to the subspace spanned by `directions` (`[MAX_DIRS,n,2]`, zero-padded beyond the
+    number of actually active directions -- see `optimizers.SubspaceNewtonLBFGS`), i.e. of
+    `a -> loss( points + sum_i a_i * directions[i] )` evaluated at `a = 0`.
 
-    Même tri + balayage `udp_start`/`udp_cont` que `diracs_cost_grad` (mêmes `sorted_idx`/
-    `radix_tmp` scratch, RECALCULÉS ici plutôt que réutilisés en résidus -- ce noyau tourne une
-    fois par pas EXTERNE de `SubspaceNewtonLBFGS`, pas par pas scipy interne, donc le O(n)
-    supplémentaire par angle est negligeable face au gain -- partager les résidus serait une
-    optimisation ultérieure si ce prototype s'avère payant).
+    Same sort + `udp_start`/`udp_cont` sweep as `diracs_cost_grad` (same `sorted_idx`/
+    `radix_tmp` scratch, RECOMPUTED here rather than reused as residuals -- this kernel runs once
+    per OUTER step of `SubspaceNewtonLBFGS`, not per inner scipy step, so the extra O(n)
+    per angle is negligible against the gain -- sharing the residuals would be a
+    later optimization if this prototype proves worthwhile).
 
-    Repose sur la MÊME approximation "assignation figée" que `grad_s = 2w(p-b)` dans
-    `diracs_cost_grad` (le barycentre `b` de chaque dirac traité comme constant vis-à-vis de sa
-    position) : à assignation fixée, le coût 1D-OT d'un dirac est EXACTEMENT quadratique en sa
-    position projetée `p`, et `p` est elle-même AFFINE en `a` (`p(a) = p(0) + sum_i a_i * e_i`,
-    `e_i = directions[i][dirac]·normal`). D'où, par angle et par dirac, en UNE SEULE passe :
-    `b_i += grad_s * e_i` (gradient du sous-espace) et `H_ij += 2*w*e_i*e_j` (Hessienne EXACTE de
-    ce modèle local, PAS une différence finie) -- somme de termes `w*e*e^T` en rang 1, donc `H` est
-    PSD par construction (jamais de courbure négative à gérer côté solveur).
+    Relies on the SAME "frozen assignment" approximation as `grad_s = 2w(p-b)` in
+    `diracs_cost_grad` (the barycenter `b` of each dirac treated as constant with respect to its
+    position): with the assignment fixed, the 1D-OT cost of a dirac is EXACTLY quadratic in its
+    projected position `p`, and `p` is itself AFFINE in `a` (`p(a) = p(0) + sum_i a_i * e_i`,
+    `e_i = directions[i][dirac]·normal`). Hence, per angle and per dirac, in A SINGLE pass:
+    `b_i += grad_s * e_i` (subspace gradient) and `H_ij += 2*w*e_i*e_j` (EXACT Hessian of
+    this local model, NOT a finite difference) -- a sum of rank-1 `w*e*e^T` terms, so `H` is
+    PSD by construction (never any negative curvature to handle on the solver side).
     """
     pts = points if isinstance( points, Tensor ) else RealTensor( points )
     dirs = directions if isinstance( directions, Tensor ) else RealTensor( directions )
@@ -297,10 +297,10 @@ def subspace_hessian( points, directions, sinogram: Sinogram ):
                                 batch_axes = [ sinogram.num_angle ] )
     dst = sinogram.batched_image().normalized_version()
 
-    # deux axes DISTINCTS (même compte MAX_DIRS partagé) : `H` est carrée [MAX_DIRS,MAX_DIRS], donc
-    # ses deux dimensions ne peuvent pas partager UN SEUL objet `Axis` (l'indexation nommée du
-    # kernel, `H( dir_index_i = i, dir_index_j = j )`, a besoin de deux noms distincts -- et
-    # `Tensor._dim_index` ne saurait pas lever l'ambiguïté entre deux occurrences du même axe).
+    # two DISTINCT axes (same shared MAX_DIRS count): `H` is square [MAX_DIRS,MAX_DIRS], so
+    # its two dimensions cannot share A SINGLE `Axis` object (the kernel's named indexing,
+    # `H( dir_index_i = i, dir_index_j = j )`, needs two distinct names -- and
+    # `Tensor._dim_index` could not resolve the ambiguity between two occurrences of the same axis).
     max_dirs = CtShapeVar( MAX_DIRS )
     dir_index_i = Axis( max_dirs, name = "dir_index_i" )
     dir_index_j = Axis( max_dirs, name = "dir_index_j" )
@@ -315,8 +315,8 @@ def subspace_hessian( points, directions, sinogram: Sinogram ):
         "diracs_subspace_hessian",
         FfiCode.per_item(
             includes = [ "loom/support/atomic_add.h" ],
-            # ( `H`/`b` sont PARTAGES -- les diracs sont les memes a tous les angles -- et
-            # accumules par `atomic_add`. Comme `grad` plus haut, ils sont semes a zero d'office. )
+            # ( `H`/`b` are SHARED -- the diracs are the same at all angles -- and
+            # accumulated by `atomic_add`. Like `grad` above, they are seeded with zero automatically. )
             code = f"""
             {{
                 constexpr SI MAX_DIRS = { MAX_DIRS };
@@ -324,8 +324,8 @@ def subspace_hessian( points, directions, sinogram: Sinogram ):
                 auto order = scratch.sorted_idx( batch_index );
                 auto tmp   = scratch.radix_tmp( batch_index );
 
-                // même vue tranchée + même tri radix LSD que `diracs_cost_grad` -- voir ses
-                // commentaires pour le détail (paquet clé+indice, pas de comparateur récursif).
+                // same sliced view + same LSD radix sort as `diracs_cost_grad` -- see its
+                // comments for the details (key+index packet, no recursive comparator).
                 auto s = inputs.src( batch_index );
                 auto proj = [&]( SI i ) {{ return s.position( i ); }};
 
@@ -367,10 +367,10 @@ def subspace_hessian( points, directions, sinogram: Sinogram ):
                     using TF = DECAYED_TYPE_OF( img.values )::TF;
                     const TF w = TF( 1 ) / TF( n );
 
-                    // même marche que `diracs_cost_grad`, mais SEUL `first_moment()` est lu (pas
-                    // `w2_dist` -- pas de coût à calculer ici) : `img.udp_start()`/`udp_cont()`
-                    // sont `const` sur `img` (jamais mutées), donc cette marche FRAÎCHE et
-                    // indépendante se comporte identiquement à celle de `diracs_cost_grad`.
+                    // same walk as `diracs_cost_grad`, but ONLY `first_moment()` is read (not
+                    // `w2_dist` -- no cost to compute here): `img.udp_start()`/`udp_cont()`
+                    // are `const` on `img` (never mutated), so this FRESH and
+                    // independent walk behaves identically to that of `diracs_cost_grad`.
                     auto udp = img.udp_start();
                     for ( SI k = 0; k < n; ++k ) {{
                         const SI di = order( k ) & 0xFFFFFFFFll;
@@ -383,9 +383,9 @@ def subspace_hessian( points, directions, sinogram: Sinogram ):
                         const TF bary = moment / w;
                         const TF grad_s = TF( 2 ) * w * ( p - bary );
 
-                        // projection de chaque direction stockée sur la normale de CET angle, à
-                        // CE dirac -- `e_i = inputs.directions[i][di]·normal`, le coefficient affine de
-                        // `p(a)` en `a_i` (voir la docstring de la fonction).
+                        // projection of each stored direction onto the normal of THIS angle, at
+                        // THIS dirac -- `e_i = inputs.directions[i][di]·normal`, the affine coefficient of
+                        // `p(a)` in `a_i` (see the function docstring).
                         TF e[ MAX_DIRS ];
                         for ( SI i = 0; i < MAX_DIRS; ++i )
                             e[ i ] = TF( inputs.directions( dir_index_i = i, num_dirac = di, proj_dim = 0 ) ) * TF( s.normal( proj_dim = 0 ) )

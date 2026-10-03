@@ -1,6 +1,6 @@
 """`HcReconstruction` — a thin orchestrator over independently-usable pieces.
 
-One class, two OT backends (pure Jax or a standalone SYCL fused kernel), no
+One class, pure Jax OT cost models, no
 loom/sdot deps. Each responsibility below is its OWN class, constructible and
 testable on its own — `HcReconstruction` only wires them together and adds a
 few convenience methods for the common path:
@@ -8,9 +8,8 @@ few convenience methods for the common path:
 - `geometry.CtGeometry` — detector/angle geometry (pure value object).
 - `sinogram.Sinogram` — a `CtGeometry` + measured values, built up via `add_disk`.
 - `cost.base.CostModel` (`cost.factory.build_cost_model`) — OT cost(+grad) of a
-  point cloud against a `Sinogram`; one concrete class per (backend, model):
-  `cost.jax_cost.JaxDiracsCost`/`JaxDisksCost`,
-  `cost.sycl_cost.SyclDiracsCost`/`SyclDisksCost`.
+  point cloud against a `Sinogram`; one concrete class per model:
+  `cost.jax_cost.JaxDiracsCost`/`JaxDisksCost`/`JaxPolygonCost`.
 - `optim.base.LineSearch` — an optimization algorithm (`optim.gradient_line_search
   .GradientDescent`/`ConjugateGradient`, `optim.lbfgs.LBFGS`, `optim.quad2d.Quad2D`/
   `GQuad2D`, `optim.grid_oracle.Grid2DOracle`/`Grid3DOracle`); each is a small,
@@ -25,7 +24,7 @@ few convenience methods for the common path:
 Usage
 -----
     hc = HcReconstruction(nb_angles=300, nb_bins=1000, extent=44.0,
-                          backend="sycl", record=True)
+                          record=True)
     hc.add_disk([0, 0], 10.0)
     hc.add_disk([2, 3], 1.0, density=-1.0)
 
@@ -58,7 +57,7 @@ class HcReconstruction:
     """
 
     def __init__(self, nb_angles: int, nb_bins: int, extent: float, *,
-                 backend: str = "jax", record: bool = False,
+                 record: bool = False,
                  model: str = "diracs", radius: float | None = None,
                  nb_pixels: int | None = None, shape: str = "disk"):
         self.geometry = CtGeometry(nb_angles, nb_bins, extent)
@@ -69,15 +68,9 @@ class HcReconstruction:
         # fixed piecewise-constant target) or "disks" (points are FIXED-radius disk
         # centers, the measured sinogram becomes fixed weighted diracs — see
         # `models.DiskModel`'s docstring for why the roles flip). `radius` is required
-        # for "disks"; `nb_pixels` is the disk-projection grid's own finesse (JAX
-        # backend only — the SYCL backend's disks kernel is continuous, no grid, see
-        # `cost.sycl_cost.SyclDisksCost`). `shape` : the per-disk PROFILE used by the
-        # disks model -- "disk" (the true circular chord) or "triangle" (a tent of the
+        # for "disks"; `nb_pixels` is the disk-projection grid's own finesse.
+        # `shape` : the per-disk PROFILE used by the disks model -- "disk" (the true circular chord) or "triangle" (a tent of the
         # same support half-width `radius`, see `cost.jax_disks._triangle_mass_angle`).
-        # JAX supports both, so the two can be compared directly; the SYCL kernel is
-        # continuous and only knows how to sweep the triangle profile in closed form,
-        # so `shape="disk"` with `backend="sycl"` raises when the cost model is built.
-        self.backend = backend.lower()
         self.model = model
         self.radius = float(radius) if radius is not None else None
         self.nb_pixels = int(nb_pixels) if nb_pixels is not None else self.geometry.nb_bins
@@ -91,7 +84,7 @@ class HcReconstruction:
     def cost_model(self):
         if self._cost_model is None:
             self._cost_model = build_cost_model(
-                self.sinogram, backend=self.backend, model=self.model,
+                self.sinogram, model=self.model,
                 radius=self.radius, nb_pixels=self.nb_pixels, shape=self.shape,
                 n_sides=self.n_sides)
         return self._cost_model
@@ -124,7 +117,7 @@ class HcReconstruction:
         become `[x, y, theta]` — the centre AND orientation of a real regular
         `n_sides`-gon of fixed circumradius `radius`. Distinct from
         `use_disks(shape="triangle")`, which is a radial density PROFILE on a
-        circularly-symmetric disk, not an actual polygon. Jax backend only.
+        circularly-symmetric disk, not an actual polygon.
         Returns self.
         """
         self.model = "polygon"
