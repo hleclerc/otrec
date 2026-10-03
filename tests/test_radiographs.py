@@ -5,6 +5,7 @@ import numpy as np
 from otrec.Radiographs import Radiographs
 from sdot import OtPlan, SumOfDiracs
 from errand import test
+from loom.testing import need
 
 
 if test( "init_is_zero" ):
@@ -61,6 +62,7 @@ if test( "add_sphere_mass_and_shape" ):
 
 
 if test( "images_feed_a_2d_transport" ):
+    need( "cpu" )
     # a radiograph is a 2D `Image` whose orientation follows ( u, v ): the barycenter of the
     # cell of a single dirac is the projected center of the ball -- which checks both
     # `origin` / `frame` and that `OtPlan` consumes it as is

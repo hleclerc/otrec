@@ -12,6 +12,7 @@ from otrec.Radiographs import Radiographs
 from otrec.Reconstruction import Reconstruction
 from sdot import set_kernel_dtype
 from errand import Param, experiment, test
+from loom.testing import need
 
 set_kernel_dtype( "FP64" )
 
@@ -33,6 +34,7 @@ def _in_spheres( points, margin = 0.1 ):
 
 
 if test( "points_in_the_spheres_give_a_small_loss" ):
+    need( "cpu" )
     # diracs sampling the balls reproduce their radiographs: the cost must be
     # small compared with that of a uniform cloud
     radio = _sphere_radiographs()
@@ -51,6 +53,7 @@ if test( "points_in_the_spheres_give_a_small_loss" ):
 
 
 if test( "multiscale_refines_up_to_the_requested_count_in_3d" ):
+    need( "cpu" )
     # by stages: 40 -> 160 -> 320 diracs ( the last one subsampled ), each stage
     # restarting from the converged cloud of the previous one ( `Reconstruction.multiscale`, the
     # visual hull as starting point ); the 3D model follows the size change ( its warm weights are
@@ -68,6 +71,7 @@ if test( "multiscale_refines_up_to_the_requested_count_in_3d" ):
 
 
 if test( "blur_annealing_reconstructs_from_the_cube" ):
+    need( "cpu" )
     # from a cloud drawn in the whole CUBE, the projections blurred first
     # ( `Reconstruction.anneal_blur` ) then tightened bring the diracs into the balls. The blur
     # is no longer there to make the TRANSPORT possible -- `SdotPlanNd`'s width continuation takes
@@ -87,6 +91,7 @@ if test( "blur_annealing_reconstructs_from_the_cube" ):
 
 
 if test( "reconstruct_converges_in_3d" ):
+    need( "cpu" )
     # starting from a uniform cloud, the descent ( L-BFGS on the fused cost + gradient, see
     # `ProjectedDiracModel.value_and_grad` ) must make the cost drop and bring the diracs INTO the
     # balls
