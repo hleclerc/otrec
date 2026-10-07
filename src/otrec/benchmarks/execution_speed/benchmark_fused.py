@@ -11,7 +11,7 @@ Usage: `SDOT_DEVICE=cpu JAX_PLATFORMS=cpu python -m applications.reconstruction.
 import argparse
 import time
 
-from loom import driver
+import loom
 
 from ...Reconstruction import Reconstruction
 from ...Sinogram import Sinogram
@@ -59,15 +59,15 @@ def benchmark_fused_vs_jax(
     model = DiracModel( sino )
     def scalar_loss( p ):
         return model.cost( model.wrap( p ) ).value
-    grad_j = driver.jit( driver.grad( scalar_loss ) )
+    grad_j = loom.jit( loom.grad( scalar_loss ) )
 
-    # fused kernel: a single call gives (cost, gradient) -- no separate `driver.jit`/`driver.grad`
+    # fused kernel: a single call gives (cost, gradient) -- no separate `loom.jit`/`loom.grad`
     # (nothing to trace, the formula is already hard-coded in the kernel).
     def fused( p ):
         return diracs_cost_grad( p, sino )[ 1 ]
 
     if verbose:
-        print( f"device={driver.device!r}  framework={driver.framework!r}" )
+        print( f"device={loom.resolved_device()!r}  framework={loom.resolved_framework()!r}" )
         print( f"problem: nb_angles={nb_angles}  nb_bins={nb_bins}  nb_diracs={nb_diracs}" )
 
     t_compile_jax, t_steady_jax = _time_steady( grad_j, positions, nb_calls )

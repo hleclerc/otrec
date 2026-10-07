@@ -39,8 +39,8 @@ def _finite_diff_grad(cost_fn, centers, eps=1e-3):
 
 
 if test("hc_disks_jax_matches_loom_sdot_diskmodel"):
-    from loom import driver
-    if driver.framework != "jax":
+    import loom
+    if loom.resolved_framework() != "jax":
         # the jax cost is float32; the reference `DiskModel` is float64 under the numpy and torch drivers, so
         # the two differ by the float32 quantization ( 0.3 % ), not by a bug: the comparison
         # only makes sense when both run at the same precision

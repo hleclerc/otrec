@@ -30,13 +30,13 @@ class GradientDescent(Optimizer):
         self.nb_steps = nb_steps
 
     def minimize(self, scalar_loss, x0, callback=None):
-        from loom import driver
+        import loom
 
         x = x0.copy() if isinstance(x0, np.ndarray) else np.array(x0)
         # jit ONCE and reuse across steps: without it each step re-traces + re-lowers the whole
-        # graph (unbounded RSS growth, ~4x slower). The C++ `driver.call` survives the trace as an
-        # FFI primitive; only the surrounding tensor algebra is fused by XLA. See driver.jit.
-        grad = driver.jit(driver.grad(scalar_loss))
+        # graph (unbounded RSS growth, ~4x slower). The C++ `loom.ffi_call` survives the trace as an
+        # FFI primitive; only the surrounding tensor algebra is fused by XLA. See loom.jit.
+        grad = loom.jit(loom.grad(scalar_loss))
 
         for step in range(self.nb_steps):
             x = x - self.lr * np.asarray(grad(x))
@@ -131,7 +131,7 @@ class LBFGS(Optimizer):
         self.disp_tol = disp_tol
 
     def minimize(self, scalar_loss, x0, callback=None):
-        from loom import driver
+        import loom
 
         x0 = x0.copy() if isinstance(x0, np.ndarray) else np.array(x0)
         shape_orig = x0.shape
@@ -139,9 +139,9 @@ class LBFGS(Optimizer):
         # Flatten to 1D for scipy
         x0_flat = x0.reshape(-1)
         # jit ONCE (compiled on the flat 1D signature scipy calls with) and reuse across iterations.
-        loss_j = driver.jit(lambda xf: scalar_loss(xf.reshape(shape_orig)))
+        loss_j = loom.jit(lambda xf: scalar_loss(xf.reshape(shape_orig)))
         loss_f = lambda xf: float(loss_j(xf))      # scipy wants a plain float (a torch scalar has a torch dtype)
-        grad_j = driver.jit(lambda xf: driver.grad(scalar_loss)(xf.reshape(shape_orig)).reshape(-1))
+        grad_j = loom.jit(lambda xf: loom.grad(scalar_loss)(xf.reshape(shape_orig)).reshape(-1))
 
         x_flat = _two_phase_lbfgsb(
             loss_f, grad_j, x0_flat, shape_orig,
@@ -155,7 +155,7 @@ class FusedLBFGS(Optimizer):
     """L-BFGS via scipy, like `LBFGS`, but for a cost whose gradient comes from an external
     FUSED evaluation (`value_and_grad(points) -> (cost: float, grad: ndarray)`, e.g.
     `dirac_fused.diracs_cost_grad`) rather than from Jax autodiff -- tracing cost and gradient
-    separately (what `LBFGS` does via `driver.jit`/`driver.grad`) would throw away this fusion (the
+    separately (what `LBFGS` does via `loom.jit`/`loom.grad`) would throw away this fusion (the
     fused kernel computes both in a single pass, see `dirac_fused.py`).
 
     Same `min_iter`/`disp_tol` policy as `LBFGS` (see its docstring, common machinery in
@@ -201,11 +201,11 @@ class GradientDescentLineSearch(Optimizer):
         self.rho = rho
 
     def minimize(self, scalar_loss, x0, callback=None):
-        from loom import driver
+        import loom
 
         x = x0.copy() if isinstance(x0, np.ndarray) else np.array(x0)
-        grad = driver.jit(driver.grad(scalar_loss))
-        loss_j = driver.jit(scalar_loss)
+        grad = loom.jit(loom.grad(scalar_loss))
+        loss_j = loom.jit(scalar_loss)
 
         for step in range(self.nb_steps):
             g = grad(x)
@@ -242,10 +242,10 @@ class Adam(Optimizer):
         self.grad_clip = grad_clip
 
     def minimize(self, scalar_loss, x0, callback=None):
-        from loom import driver
+        import loom
 
         x = x0.copy() if isinstance(x0, np.ndarray) else np.array(x0)
-        grad = driver.jit(driver.grad(scalar_loss))
+        grad = loom.jit(loom.grad(scalar_loss))
 
         m = np.zeros_like(x)  # first moment
         v = np.zeros_like(x)  # second moment
@@ -284,7 +284,7 @@ class SubspaceNewtonLBFGS(FusedLBFGS):
     the current gradient, as the basis of a subspace, and solves at EACH step an EXACT Newton in
     this subspace (`m` <= `max_dirs` unknowns `a`, `m x m`) instead of a simple descent
     direction + 1D line search -- `dirac_fused.subspace_hessian` provides `(H, b)` in a second fused
-    `driver.call`, closed formula (see its docstring for the derivation).
+    `loom.ffi_call`, closed formula (see its docstring for the derivation).
 
     Stacks the steps ACTUALLY taken, NOT the successive gradients (first version tested): near
     an optimum, successive gradients become nearly collinear (the classic zigzag of

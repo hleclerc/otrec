@@ -9,7 +9,7 @@ import numpy as np
 from otrec.Sinogram import Sinogram
 from otrec.models import DiracModel
 from otrec.dirac_fused import diracs_cost_grad, subspace_hessian, MAX_DIRS
-from loom import driver
+import loom
 from errand import test
 from loom.testing import need
 
@@ -31,8 +31,8 @@ if test( "diracs_cost_grad_matches_pure_jax" ):
     model = DiracModel( sino )
     def scalar_loss( p ):
         return model.cost( model.wrap( p ) ).value
-    cost_jax = float( driver.jit( scalar_loss )( pts ) )
-    grad_jax = np.asarray( driver.jit( driver.grad( scalar_loss ) )( pts ) )
+    cost_jax = float( loom.jit( scalar_loss )( pts ) )
+    grad_jax = np.asarray( loom.jit( loom.grad( scalar_loss ) )( pts ) )
 
     assert np.isfinite( cost_fused )
     assert abs( cost_fused - cost_jax ) < 1e-8 * max( 1.0, abs( cost_jax ) ), \
@@ -53,8 +53,8 @@ if test( "diracs_cost_grad_single_angle" ):
     model = DiracModel( sino )
     def scalar_loss( p ):
         return model.cost( model.wrap( p ) ).value
-    cost_jax = float( driver.jit( scalar_loss )( pts ) )
-    grad_jax = np.asarray( driver.jit( driver.grad( scalar_loss ) )( pts ) )
+    cost_jax = float( loom.jit( scalar_loss )( pts ) )
+    grad_jax = np.asarray( loom.jit( loom.grad( scalar_loss ) )( pts ) )
 
     assert abs( cost_fused - cost_jax ) < 1e-8 * max( 1.0, abs( cost_jax ) )
     assert np.allclose( grad_fused, grad_jax, atol = 1e-6, rtol = 1e-5 )

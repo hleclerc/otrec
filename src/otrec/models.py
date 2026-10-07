@@ -275,7 +275,8 @@ class ProjectedDiracModel( Model ):
         else:
             pb.source = SumOfDiracs( uv )
         plan = pb.solve( Iterative( max_iter = self.max_iter, tol = self.mass_tol / len( uv ),
-                                    precision = self.precision, continuation = self.continuation ) )
+                                    precision = self.precision, continuation = self.continuation,
+                                    on_failure = "ignore" ) )          # ( an approximate plan serves the descent; `solver_stats` counts them )
         self._account( k, plan )
         return plan
 

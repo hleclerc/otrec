@@ -1,5 +1,5 @@
 """Fused reference (loom `FfiCode` kernel, CPU for now) of the cost + gradient of the DIRACS model (`models.DiracModel`),
-in a SINGLE fwd-only `driver.call` -- without `backward`, hence without going through Jax autodiff: the
+in a SINGLE fwd-only `loom.ffi_call` -- without `backward`, hence without going through Jax autodiff: the
 gradient is written directly by the kernel, closed formula `(point - barycenter) * direction`,
 instead of a `jax.grad` through `_pure_jax_cost1d.cost_1d_ot` (the default path,
 `Image.try_update_sdotplan1d`) or the fwd/bwd pair of `SdotPlan1d.cxx` (the general C++ path).
@@ -26,7 +26,8 @@ exposes `diracs_cost_grad` with the same contract that `optimizers.FusedLBFGS` e
 import numpy as np
 
 import loom
-from loom import Tensor, Axis, CtShapeVar, driver, RealTensor, IntTensor
+import loom
+from loom import Tensor, Axis, CtShapeVar, RealTensor, IntTensor
 from loom.compilation.FfiCode import FfiCode
 from sdot.distributions.ProjectedSumOfDiracs import ProjectedSumOfDiracs
 

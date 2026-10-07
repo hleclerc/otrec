@@ -15,7 +15,7 @@ from otrec.disks import DiskProjector
 from otrec.models import DiskModel, sinogram_diracs
 from otrec.optimizers import LBFGS
 from otrec.viz.points_html import export_positions_html
-from loom import driver
+import loom
 from errand import test
 from loom.testing import need
 
@@ -87,9 +87,9 @@ if test( "disk_projection_gradient" ):
     proj = DiskProjector( sino, radius = radius )
 
     def scalar( c ):
-        return driver.sum( proj.values( c ).value ** 2 )
+        return loom.ops().sum( proj.values( c ).value ** 2 )
 
-    g = np.asarray( driver.grad( scalar )( driver.array( truth ) ) )
+    g = np.asarray( loom.grad( scalar )( loom.array( truth ) ) )
     assert np.all( np.isfinite( g ) ), f"gradient not finite: { g }"
 
     eps = 1e-6
@@ -99,7 +99,7 @@ if test( "disk_projection_gradient" ):
             hp, hm = truth.copy(), truth.copy()
             hp[ i, j ] += eps
             hm[ i, j ] -= eps
-            fd[ i, j ] = ( float( scalar( driver.array( hp ) ) ) - float( scalar( driver.array( hm ) ) ) ) / ( 2 * eps )
+            fd[ i, j ] = ( float( scalar( loom.array( hp ) ) ) - float( scalar( loom.array( hm ) ) ) ) / ( 2 * eps )
 
     rel = np.abs( g - fd ) / np.maximum( np.abs( fd ), 1.0 )
     assert rel.max() < 1e-3, f"gradient != finite differences:\n{ g }\n{ fd }"
@@ -107,7 +107,7 @@ if test( "disk_projection_gradient" ):
 
 if test( "disk_chunked_matches_unchunked" ):
     need( "grad" )
-    # splitting into chunks (`driver.fold` + `driver.checkpoint`, which bounds the backward memory
+    # splitting into chunks (`loom.fold` + `loom.checkpoint`, which bounds the backward memory
     # peak -- see `DiskProjector.values`) must be NEUTRAL: same values, same gradient. The case
     # that matters is the one where the chunk size does NOT divide the number of disks: the last
     # chunk is then padded with zero-weight filler centers, whose mass and gradient must not
@@ -120,10 +120,10 @@ if test( "disk_chunked_matches_unchunked" ):
     assert whole._chunk_size( len( truth ) ) == len( truth ), "this case must fit in one chunk"
 
     def scalar( proj, c ):
-        return driver.sum( proj.values( c ).value ** 2 )
+        return loom.ops().sum( proj.values( c ).value ** 2 )
 
     ref_v = np.asarray( whole.values( truth ) )
-    ref_g = np.asarray( driver.grad( lambda c: scalar( whole, c ) )( driver.array( truth ) ) )
+    ref_g = np.asarray( loom.grad( lambda c: scalar( whole, c ) )( loom.array( truth ) ) )
 
     per_disk = whole.nb_angles * ( whole.nb_pixels + 1 )
     for chunk in ( 1, 2, 3, 4 ):                 # 4 = uneven chunks, 2 = last one half empty
@@ -133,7 +133,7 @@ if test( "disk_chunked_matches_unchunked" ):
         v = np.asarray( proj.values( truth ) )
         assert np.allclose( v, ref_v, atol = 1e-12 ), f"chunk={ chunk } : deviation { np.max( np.abs( v - ref_v ) ) }"
 
-        g = np.asarray( driver.grad( lambda c: scalar( proj, c ) )( driver.array( truth ) ) )
+        g = np.asarray( loom.grad( lambda c: scalar( proj, c ) )( loom.array( truth ) ) )
         assert np.allclose( g, ref_g, atol = 1e-10 ), f"chunk={ chunk } : gradient\n{ g }\n!=\n{ ref_g }"
 
 
@@ -199,7 +199,7 @@ if test( "disk_loss_gradient" ):
     def scalar( c ):
         return model.cost( model.wrap( c ) ).value
 
-    g = np.asarray( driver.grad( scalar )( driver.array( start ) ) )
+    g = np.asarray( loom.grad( scalar )( loom.array( start ) ) )
     assert np.all( np.isfinite( g ) ), f"gradient not finite: { g }"
 
     eps = 1e-5
@@ -209,7 +209,7 @@ if test( "disk_loss_gradient" ):
             hp, hm = start.copy(), start.copy()
             hp[ i, j ] += eps
             hm[ i, j ] -= eps
-            fd[ i, j ] = ( float( scalar( driver.array( hp ) ) ) - float( scalar( driver.array( hm ) ) ) ) / ( 2 * eps )
+            fd[ i, j ] = ( float( scalar( loom.array( hp ) ) ) - float( scalar( loom.array( hm ) ) ) ) / ( 2 * eps )
 
     rel = np.abs( g - fd ) / np.maximum( np.abs( fd ), 1e-3 )
     assert rel.max() < 1e-3, f"gradient != finite differences:\n{ g }\n{ fd }\nrel { rel }"

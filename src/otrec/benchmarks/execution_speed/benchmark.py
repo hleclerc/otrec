@@ -3,7 +3,7 @@
 Not an optimizer quality comparison (see ../optimizers/benchmark.py for that) -- here we
 only look at TIME: JIT compilation cost (first call) then steady-state throughput
 (once the kernel is compiled), for `loss` alone (forward) and for its gradient
-(forward + backward, via `driver.grad`). The goal is to compare the SAME problem on different
+(forward + backward, via `loom.grad`). The goal is to compare the SAME problem on different
 hardware/backends (local CPU, `lmo` CUDA/CPU -- see the `bench`/`bench_lmo` targets of
 `.private/Makefile`) before looking for specific optimizations.
 
@@ -14,7 +14,7 @@ Direct usage: `python -m applications.reconstruction.benchmarks.execution_speed.
 import argparse
 import time
 
-from loom import driver
+import loom
 
 from ...Reconstruction import Reconstruction
 from ...Sinogram import Sinogram
@@ -83,12 +83,12 @@ def benchmark_execution_speed(
     def scalar_loss_bary( p ):
         return model_bary.cost( model_bary.wrap( p ) ).value
 
-    loss_j = driver.jit( scalar_loss )
-    grad_j = driver.jit( driver.grad( scalar_loss ) )
-    grad_bary_j = driver.jit( driver.grad( scalar_loss_bary ) )
+    loss_j = loom.jit( scalar_loss )
+    grad_j = loom.jit( loom.grad( scalar_loss ) )
+    grad_bary_j = loom.jit( loom.grad( scalar_loss_bary ) )
 
     if verbose:
-        print( f"device={driver.device!r}  framework={driver.framework!r}" )
+        print( f"device={loom.resolved_device()!r}  framework={loom.resolved_framework()!r}" )
         print( f"problem: nb_angles={nb_angles}  nb_bins={nb_bins}  nb_diracs={nb_diracs}" )
 
     t_compile_loss, t_steady_loss = _time_steady( loss_j, positions, nb_calls )
@@ -98,11 +98,11 @@ def benchmark_execution_speed(
     # one `SdotPlan1d` (size nb_diracs) per angle is solved at each loss/grad call (batched).
     nb_ot_solves = nb_angles
 
-    print( driver.ftype.cpp_name )
+    print( loom.resolved_dtype().cpp_name )
 
     result = {
         "nb_angles": nb_angles, "nb_bins": nb_bins, "nb_diracs": nb_diracs,
-        "device": repr( driver.device ), "framework": repr( driver.framework ),
+        "device": repr( loom.resolved_device() ), "framework": repr( loom.resolved_framework() ),
         "nb_calls": nb_calls,
         "t_compile_loss": t_compile_loss, "t_steady_loss": t_steady_loss,
         "t_compile_grad": t_compile_grad, "t_steady_grad": t_steady_grad,
@@ -135,7 +135,7 @@ def _parse_args():
 
 
 if __name__ == "__main__":
-    driver.ftype = "FP32"
+    loom.default_dtype = "FP32"
     
     args = _parse_args()
     benchmark_execution_speed(

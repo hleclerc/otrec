@@ -23,7 +23,8 @@ import time
 
 import numpy as np
 
-from loom import Tensor, driver
+import loom
+from loom import Tensor
 
 from .Sinogram import Sinogram
 from .models import DiracModel, DiskModel, Model, ProjectedDiracModel
@@ -117,7 +118,7 @@ class Reconstruction:
         `Reconstruction` (its cloud is then taken over -- to restart from an existing result)."""
         if isinstance( points, Reconstruction ):
             points = points.points
-        raw = points.raw if isinstance( points, Tensor ) else driver.array( np.asarray( points, dtype = float ) )
+        raw = points.raw if isinstance( points, Tensor ) else loom.array( np.asarray( points, dtype = float ) )
         if raw.ndim != 2 or raw.shape[ 1 ] != self.dim:
             raise ValueError( f"points must have shape [ n, { self.dim } ], got { tuple( raw.shape ) }" )
         self.points = Tensor.wrap( raw, [ "num_point", "dim" ] )

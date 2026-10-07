@@ -20,7 +20,8 @@ path taken is the purely Jax one of `Image.try_update_sdotplan1d` (no C++ kernel
 """
 import numpy as np
 
-from loom import Tensor, driver, RealTensor
+import loom
+from loom import Tensor, RealTensor
 from sdot import Image
 
 from .Sinogram import Sinogram
@@ -55,7 +56,7 @@ class DiskProjector:
         self.dw = sinogram.extent / self.nb_pixels
         self.s_min = sinogram.s_min
         # edges of the image cells, [ nb_pixels + 1 ] -- backend side (graph constant)
-        self.edges = driver.array( self.s_min + self.dw * np.arange( self.nb_pixels + 1 ) )
+        self.edges = loom.array( self.s_min + self.dw * np.arange( self.nb_pixels + 1 ) )
 
         # bound (in elements) of the intermediate tensor `[ nb_angles, nb_disks, nb_pixels + 1 ]`:
         # beyond it, `values` splits the loop over the DISKS into slices and accumulates -- the result
@@ -64,8 +65,8 @@ class DiskProjector:
 
         # the contribution of a slice, with its intermediates RECOMPUTED in the backward instead of
         # being kept on the tape (see `values`). Wrapped once here, not at each call:
-        # `driver.checkpoint` builds a transformation object, better to do it only once.
-        self._values_of_chunk = driver.checkpoint( self._values_of )
+        # `loom.checkpoint` builds a transformation object, better to do it only once.
+        self._values_of_chunk = loom.checkpoint( self._values_of )
 
     # -- geometry ----------------------------------------------------------
 
@@ -113,16 +114,16 @@ class DiskProjector:
         s0 = self.sinogram.project_points( centers ).value          # [ nb_angles, nb_disks ]
         u = self.edges[ None, None, : ] - s0[ :, :, None ]           # [ nb_angles, nb_disks, nb_pixels + 1 ]
 
-        t = driver.clip( u, -r, r )
-        sq = driver.sqrt( driver.clip( r * r - t * t, 0.0, None ) )
+        t = loom.ops().clip( u, -r, r )
+        sq = loom.ops().sqrt( loom.ops().clip( r * r - t * t, 0.0, None ) )
         chord = 2.0 * sq
-        G = t * sq + r * r * driver.arcsin( driver.clip( t / r, -1.0, 1.0 ) )
-        H = driver.stop_gradient( G - chord * u ) + driver.stop_gradient( chord ) * u
+        G = t * sq + r * r * loom.ops().arcsin( loom.ops().clip( t / r, -1.0, 1.0 ) )
+        H = loom.ops().stop_gradient( G - chord * u ) + loom.ops().stop_gradient( chord ) * u
 
         mass = H[ :, :, 1: ] - H[ :, :, :-1 ]                        # mass per ( angle, disk, pixel )
         if weights is not None:
             mass = mass * weights[ None, :, None ]
-        return driver.sum( mass, axis = 1 ) / self.dw                # sum over the disks -> density
+        return loom.ops().sum( mass, axis = 1 ) / self.dw                # sum over the disks -> density
 
     def values( self, centers ) -> Tensor:
         """Projected density `[ num_angle, num_pixel ]`, differentiable with respect to `centers`
@@ -134,11 +135,11 @@ class DiskProjector:
         result (up to the summation order) and bounds the memory peak to ONE slice -- provided
         it is done correctly, which requires the two mechanisms together:
 
-        - `driver.fold` (a compiled loop, not an unrolled Python loop) makes execution
+        - `loom.fold` (a compiled loop, not an unrolled Python loop) makes execution
           SEQUENTIAL. Unrolled, the loop instead lets the compiler schedule all the
           slices at once -- measured: the peak stayed proportional to the number of disks, and the
           compile time too;
-        - `driver.checkpoint` on `_values_of` makes the slice be RECOMPUTED in the backward instead of
+        - `loom.checkpoint` on `_values_of` makes the slice be RECOMPUTED in the backward instead of
           keeping its intermediates, which the loop would otherwise store once per iteration.
 
         Measured (600 angles x 2000 pixels, gradient): 5.4 GB for 512 disks before, 0.4 GB after,
@@ -147,7 +148,7 @@ class DiskProjector:
         `max_chunk_elems` prescribes. The price is one extra forward per slice.
 
         The last slice is completed with padding centers neutralized by a weight of 0
-        -- `driver.fold` requires FIXED-size iterations.
+        -- `loom.fold` requires FIXED-size iterations.
         """
         pts = centers if isinstance( centers, Tensor ) else RealTensor( centers )
         if pts.rank != 2 or pts.shape[ 1 ] != 2:
@@ -164,17 +165,17 @@ class DiskProjector:
             pad = nb_chunks * chunk - nb_disks
             # the padding centers are (0,0): their position does not matter
             # since they carry zero weight.
-            padded = raw if pad == 0 else driver.pad( raw, ( ( 0, pad ), ( 0, 0 ) ) )
+            padded = raw if pad == 0 else loom.ops().pad( raw, ( ( 0, pad ), ( 0, 0 ) ) )
             weights = np.ones( nb_chunks * chunk )
             weights[ nb_disks: ] = 0.0
 
             xs = { "centers": padded.reshape( nb_chunks, chunk, 2 ),
-                   "weights": driver.array( weights.reshape( nb_chunks, chunk ) ) }
+                   "weights": loom.array( weights.reshape( nb_chunks, chunk ) ) }
             # the accumulator update stays OUTSIDE the checkpoint: inside, the accumulator itself
-            # would become a residual stored at each iteration (see `driver.fold`).
-            acc = driver.fold(
+            # would become a residual stored at each iteration (see `loom.fold`).
+            acc = loom.fold(
                 lambda cum, x: cum + self._values_of_chunk( x[ "centers" ], x[ "weights" ] ),
-                driver.zeros( ( self.nb_angles, self.nb_pixels ) ), xs )
+                loom.zeros( ( self.nb_angles, self.nb_pixels ) ), xs )
 
         return Tensor.wrap( acc, [ self.sinogram.num_angle.name, "num_pixel" ] )
 
@@ -184,7 +185,7 @@ class DiskProjector:
 
         `current_mass` is provided explicitly (`sum of densities * cell width`, the very
         definition of the measure of a 1D piecewise-constant image) rather than left to
-        `Image._update_current_mass`, which computes it through a `driver.call` (C++ kernel). The computation
+        `Image._update_current_mass`, which computes it through a `loom.ffi_call` (C++ kernel). The computation
         is trivial in `Tensor` algebra and avoiding it keeps the WHOLE loss in the Jax graph: no
         C++ compilation nor FFI round trip at each optimizer step.
         """

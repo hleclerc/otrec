@@ -669,7 +669,7 @@ def run_disks_alpha_profile(
     number of steps (see `Reconstruction.disks` -- without it, LBFGS-B may conclude convergence
     after 0-1 steps on this model, flat directions).
     """
-    from loom import driver
+    import loom
 
     print( f"generating phantom ({ nb_alveoli } alveoli)..." )
     sino, _lobes, _alveoli = make_lung_phantom( nb_alveoli = nb_alveoli, alveolus_radius = alveolus_radius )
@@ -691,8 +691,8 @@ def run_disks_alpha_profile(
 
     def scalar_loss( q ):
         return model.cost( model.wrap( q ) ).value
-    loss_j = driver.jit( scalar_loss )
-    grad_j = driver.jit( driver.grad( scalar_loss ) )
+    loss_j = loom.jit( scalar_loss )
+    grad_j = loom.jit( loom.grad( scalar_loss ) )
 
     alphas = np.linspace( *alpha_range, nb_alpha )
     profiles = []
