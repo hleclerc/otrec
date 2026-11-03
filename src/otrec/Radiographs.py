@@ -83,6 +83,17 @@ class Radiographs( Aggregate ):
     # -- geometry ----------------------------------------------------------
 
     @property
+    def geometry( self ):
+        """The acquisition as a `geometry.ParallelGeometry` ( jax ): what `Reconstruction3d` consumes."""
+        from .geometry import ParallelGeometry
+        return ParallelGeometry( self.bases, self.u_min, self.v_min, self.du, self.dv, self.nb_u_host, self.nb_v_host )
+
+    def with_background( self, background: float ) -> np.ndarray:
+        """The radiographs `[ nb_angles, nb_u, nb_v ]` plus `background` times the mean value of each one ( see `image` )."""
+        vals = np.asarray( self.values, dtype = float )
+        return vals + background * vals.mean( axis = ( 1, 2 ), keepdims = True ) if background else vals
+
+    @property
     def u_edges( self ) -> np.ndarray:
         return self.u_min + self.du * np.arange( self.nb_u_host + 1 )
 
@@ -176,20 +187,60 @@ class Radiographs( Aggregate ):
         uv0 = self.project_points( center[ None, : ] )[ :, 0, : ]                  # [ nb_angles, 2 ]
 
         # the Gauss-Legendre nodes on [ 0, 1 ], and their weights ( sum 1 )
-        x, w = np.polynomial.legendre.leggauss( self.quadrature )
-        x, w = ( x + 1 ) / 2, w / 2
+        x, w = self._nodes()
         us = self.u_edges[ :-1, None ] + self.du * x[ None, : ]                   # [ nb_u, q ]
         vs = self.v_edges[ :-1, None ] + self.dv * x[ None, : ]                   # [ nb_v, q ]
 
-        contribution = np.zeros( ( len( self.angles ), self.nb_u_host, self.nb_v_host ) )
+        vals = np.array( self.values, dtype = float )
         for k in range( len( self.angles ) ):
-            a2 = ( us - uv0[ k, 0 ] ) ** 2                                         # [ nb_u, q ]
-            b2 = ( vs - uv0[ k, 1 ] ) ** 2                                         # [ nb_v, q ]
+            # only the pixels of the projected disk's bounding box
+            iu, ju = self._window( uv0[ k, 0 ] - r, uv0[ k, 0 ] + r, self.u_min, self.du, self.nb_u_host )
+            iv, jv = self._window( uv0[ k, 1 ] - r, uv0[ k, 1 ] + r, self.v_min, self.dv, self.nb_v_host )
+            if iu >= ju or iv >= jv:
+                continue
+            a2 = ( us[ iu:ju ] - uv0[ k, 0 ] ) ** 2                                # [ wu, q ]
+            b2 = ( vs[ iv:jv ] - uv0[ k, 1 ] ) ** 2                                # [ wv, q ]
             chord = 2 * np.sqrt( np.maximum( r * r - a2[ :, :, None, None ] - b2[ None, None, :, : ], 0.0 ) )
-            contribution[ k ] = np.einsum( "iajb,a,b->ij", chord, w, w )
+            vals[ k, iu:ju, iv:jv ] += density * np.einsum( "iajb,a,b->ij", chord, w, w )
 
-        self.values = self.values + density * contribution
+        self.values = vals
         return self
+
+    def add_cylinder( self, center, radius: float, height: float, density: float = 1.0 ) -> "Radiographs":
+        """Adds the projection of a uniform cylinder of axis `z` ( the rotation axis ), of the given `radius` and `height`,
+        centered at `center`.
+
+        A ray at distance `a` from the axis crosses it along the chord `2 sqrt( r^2 - a^2 )` when its height is within the
+        cylinder: per pixel, the chord is integrated in `u` by the same quadrature as `add_sphere` and the height exactly
+        ( the overlap of the pixel's `v` range with the cylinder's ). Only for views around `z` ( `v` along `z` ).
+        """
+        center = np.asarray( center, dtype = float )
+        r, h = float( radius ), float( height )
+        uv0 = self.project_points( center[ None, : ] )[ :, 0, : ]
+        x, w = self._nodes()
+        us = self.u_edges[ :-1, None ] + self.du * x[ None, : ]                   # [ nb_u, q ]
+        ve = self.v_edges
+        z0, z1 = center[ 2 ] - h / 2, center[ 2 ] + h / 2
+        frac_v = np.clip( np.minimum( ve[ 1: ], z1 ) - np.maximum( ve[ :-1 ], z0 ), 0.0, None ) / self.dv   # [ nb_v ]
+        vals = np.array( self.values, dtype = float )
+        for k in range( len( self.angles ) ):
+            a2 = ( us - uv0[ k, 0 ] ) ** 2
+            chord = ( 2 * np.sqrt( np.maximum( r * r - a2, 0.0 ) ) * w[ None, : ] ).sum( 1 )                 # [ nb_u ]
+            vals[ k ] += density * chord[ :, None ] * frac_v[ None, : ]
+        self.values = vals
+        return self
+
+    def _nodes( self ):
+        """the Gauss-Legendre nodes on [ 0, 1 ], and their weights ( sum 1 )"""
+        x, w = np.polynomial.legendre.leggauss( self.quadrature )
+        return ( x + 1 ) / 2, w / 2
+
+    @staticmethod
+    def _window( lo, hi, start, step, nb ):
+        """the pixel range [ i, j ) that meets [ lo, hi ]"""
+        i = max( 0, int( np.floor( ( lo - start ) / step ) ) )
+        j = min( nb, int( np.ceil( ( hi - start ) / step ) ) )
+        return i, j
 
     def blurred( self, sigma: float ) -> "Radiographs":
         """The same radiographs BLURRED by a Gaussian of standard deviation `sigma` ( in world
@@ -217,7 +268,7 @@ class Radiographs( Aggregate ):
 
     def _image_kwargs( self ):
         return dict( origin = [ self.u_min, self.v_min ],
-                     frame = [ [ self.du, 0.0 ], [ 0.0, self.dv ] ] )
+                     pixel_frame = [ [ self.du, 0.0 ], [ 0.0, self.dv ] ] )
 
     def image( self, k: int, background: float = 0.0 ) -> Image:
         """2D `Image` of the radiograph at angle k, in real detector coordinates.

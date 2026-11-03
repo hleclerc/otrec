@@ -194,7 +194,7 @@ class DiskProjector:
         return Image(
             values = values,
             origin = [ self.s_min ],                                 # shared (common geometry)
-            frame = [ [ self.dw ] ],                                 # shared
+            pixel_frame = [ [ self.dw ] ],                                 # shared
             current_mass = mass,
             batch_axes = [ self.sinogram.num_angle ],
         )

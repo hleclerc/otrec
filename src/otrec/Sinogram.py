@@ -130,6 +130,20 @@ class Sinogram( Aggregate ):
         self.values = self.values + contribution
         return self
 
+    def add_dome( self, center, radius: float, k: int = 1, mass: float | None = None ) -> "Sinogram":
+        """Adds the projection of a DOME: the radial density ( 1 - |x|^2/r^2 )^( k - 1/2 ), whose
+        projection at every angle is c_k ( 1 - t^2/r^2 )^k ( `sdot.projected1d`, shape "dome" ). Its mass
+        is pi r^2 / ( k + 1/2 ) unless `mass` is given. Integrated per bin, like `add_disk`."""
+        from sdot.projected1d import _dome_coeffs
+        center = np.asarray( center, dtype = float )
+        r = float( radius )
+        m = np.pi * r * r / ( k + 0.5 ) if mass is None else float( mass )
+        _, a = _dome_coeffs( k )
+        t = np.clip( ( self.bin_edges[ None, : ] - ( self.normals @ center )[ :, None ] ) / r, -1, 1 )
+        G = 0.5 + sum( aj * t ** ( 2 * j + 1 ) for j, aj in enumerate( a ) )
+        self.values = self.values + m * ( G[ :, 1: ] - G[ :, :-1 ] ) / self.dw
+        return self
+
     def blurred( self, sigma: float ) -> "Sinogram":
         """The same sinogram BLURRED by a Gaussian of standard deviation `sigma` ( world units ),
         profile by profile -- see `Radiographs.blurred` for what the blur buys."""
@@ -152,7 +166,7 @@ class Sinogram( Aggregate ):
         return Image(
             values = self.values[ k ],
             origin = [ self.s_min ],
-            frame = [ [ self.dw ] ],
+            pixel_frame = [ [ self.dw ] ],
         )
 
     def batched_image( self ) -> Image:
@@ -163,7 +177,7 @@ class Sinogram( Aggregate ):
         return Image(
             values = self.values,                       # [ num_angle, num_bin ]
             origin = [ self.s_min ],                    # shared (common detector geometry)
-            frame = [ [ self.dw ] ],                    # shared
+            pixel_frame = [ [ self.dw ] ],                    # shared
             batch_axes = [ self.num_angle ],
         )
 

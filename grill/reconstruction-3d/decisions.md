@@ -1,0 +1,116 @@
+# Reconstruction 3D : décisions
+
+- **Matériel** : la 2080 Ti sert à s'entraîner ; la cible, ce sont des GPU plus gros et plus récents. Ne pas dimensionner sur 11 Go.
+- **Perte de cette étape** : transport 2D exact par vue ( semi-discret diracs → radiographie ). Le but est d'observer comment les diracs se déplacent et comment ça converge. Le sliced viendra peut-être plus tard comme approximation de départ, mais il n'est pas fait à cette étape.
+- **Lots de problèmes 2D** : sans enjeu. Chaque problème est long ; on vise un angle à la fois par carte GPU.
+- **Jeu de directions ( sliced )** : budget T global réparti ~uniformément sur S², fixe pendant une étape. Accepté, mais en attente ( pas de sliced à cette étape ).
+- **Tailles** : 1e7 pour tester, davantage ensuite sur un autre matériel.
+- **Profils 1D mesurés** : dépôt exact des pixels ( trapèzes ) le jour où on fera du sliced. Pas maintenant.
+- **Géométrie** : faisceau parallèle d'abord, mais le conique viendra. Ne pas faire d'hypothèses fondées sur le parallèle ( projection = fonction générale du point, pas seulement une base linéaire ).
+- **Objets** : diracs seulement pour démarrer. Les dômes ne servent qu'à finaliser la convergence ( les diracs rendent le problème non différentiable ).
+- **Code** : `ProjectedLoss1d` en dimension d côté sdot ; `Reconstruction` unifiée 2D/3D dans otrec ; l'ancien chemin 3D reste en référence jusqu'à validation.
+
+## Round 2 ( transport 2D exact par vue )
+
+- **Taille d'exploration** : 1e4–1e5 diracs, 30–100 vues, détecteur 256², puis on monte. Première mesure : coût d'un solve warm start selon N et la taille d'image.
+- **Pas** : Lloyd relevé ( x_i ← argmin Σ_k |P_k(x) − b_ki|², Gauss-Newton en conique, relâché par τ ) comme outil principal, et L-BFGS en comparaison sur les mêmes cas.
+- **Warm start** : poids [A, N] sur le device tant que ça tient, sinon sur l'hôte, avec une copie asynchrone par vue.
+- **Boucle** : boucle Python sur les pas et les vues, solve jitté par vue, pas jitté. En multi-GPU, vue k sur la carte k mod n_gpu, dispatch asynchrone, un seul process.
+- **Mesures** : coût total et par vue ; Newton ( itérations, diagrammes, statut ) ; déplacement ; désaccord entre vues par dirac ; distance à la vérité ; instantanés npz ; page de visualisation ( nuage coloré, projections sur les radiographies, courbes ).
+  - Ajout d'Hugo : montrer si chaque dirac gagnerait à **grossir ou maigrir** ( dérivée du coût par rapport à sa masse ). Note : en semi-discret, ∂W2²/∂ν_i est le poids dual w_i ( à une constante près, la masse totale étant fixe ). C'est donc gratuit, avec Σ_k ( w_ki − moyenne ) sur les vues.
+- **Départ et fantômes** : enveloppe visuelle par défaut, comparée à un tirage uniforme ; boules d'abord, puis boules creuses, boules en contact, structures fines ; fond de 1e-6.
+- **Géométrie** : `Geometry` en jax ( project, jacobienne, cadre du détecteur ), `ParallelGeometry` maintenant, `ConeGeometry` plus tard ; `Radiographs` porte une `Geometry`.
+- **Ordre** : ( 1 ) `Geometry` + `Radiographs` jax + fantôme ; ( 2 ) banc solve froid/chaud ; ( 3 ) `Reconstruction3d` ( boucle, Lloyd relevé, L-BFGS, mesures ) ; ( 4 ) expériences + visualisation, puis arrêt pour regarder ensemble ; ( 5 ) répartition multi-GPU.
+
+## Réalisé ( 2026-10-17, non commité )
+
+- Code : `geometry.py` ( `ParallelGeometry` ), `Radiographs.geometry` / `with_background` / `add_cylinder` / `add_sphere` fenêtré, `phantoms.py` ( `foam`, balls, hollow, touching, thin ; métriques ), `reconstruction3d.py` ( `Reconstruction3d` : Lloyd relevé, L-BFGS scipy, désaccord, dérivée en masse ), `bench/bench_view3d.py`, `experiments/exp_3d.py` ( `--device=cpu` pour les CPU de lmo ), `viz/view3d.py` ( nos pages : Visualizer sdot, convergence, tranche points_html ), `tests/test_reconstruction3d.py` ( 8 tests, OK CPU et GPU ).
+- Hugo, après le round 2 : explorer des **matériaux creux type mousse** ( les boules seules n'ont pas d'intérêt ), en commençant par un cylindre de mousse inclus dans le champ ; les calculs longs sur lmo ( ou n22 ), pas sur le Mac ; nos pages HTML plutôt que plotly.
+- Mousse : cylindre r = 0,8, h = 1,4, 753 pores sphériques ( r 0,03–0,15, parois ≥ 0,015 ), porosité 43 %, détecteur de côté 2.
+- Mesures 2080 Ti ( lmo ), 60 vues 256² :
+  - 3e4 diracs, 30 pas : 288 s, 91 % des diracs dans la matière ( tolérance 1 pixel ) ; la tranche ne montre pas les pores ( diracs espacés de ~0,04 > parois ).
+  - 1e5 diracs, 60 pas, τ = 1 : 1173 s, 93,7 % ; τ = 1,8 : 984 s, 94,8 %, couverture 0,013 ; les grands pores apparaissent nettement dans la tranche.
+  - Newton par vue au régime : ~4 itérations, ~0,1 s par vue à 1e5 ; les premiers pas coûtent 30–90 itérations.
+- Démarrage à chaud sur GPU : sur l'image de boules ( fond 1e-6 ), le solveur rejette weights0 et repart de Voronoi ( 43 it à chaud contre 39 à froid ) ; sur la mousse, ça marche. Session à part ouverte sur sdot.
+- Hugo : mousse plus réaliste avant de monter en taille ( porosité 70–90 %, parois fines type Voronoï ).
+- `phantoms.VoronoiFoam` : faces d'un diagramme de Voronoï épaissies ( distance exacte à la face par les deux graines les plus proches ), coupées par le cylindre ; épaisseur fixée par bissection Monte-Carlo pour la porosité ; radiographies par voxelisation ( occupation partielle ) puis intégration le long des rayons en jax ( 30 s pour 60 × 256² sur lmo ). Test : masse = volume solide à 0,5 % près, un échantillon se projette sur les mêmes images.
+- Résultats 2080 Ti, 400 cellules, porosité 80 %, parois 0,0146 ( ~1,9 pixel ), 60 vues 256², τ = 1,8 :
+  - 1e5 diracs, 60 pas : 830 s, 85,8 % dans la matière, couverture 0,0107 ;
+  - 3e5 diracs, 40 pas : 3901 s, 85,0 %, couverture 0,0073, coût 2,0e-4 ; le réseau de parois est nettement reconstruit, mais les parois restent épaisses et floues ( diracs diffus entre elles ).
+  - à 3e5, Newton coûte cher au début ( ~100 it/vue, 300 s par pas ), ~5 it en régime ( 25 s par pas ).
+- CPU de lmo ( `--device=cpu` ) : 888 s pour le premier pas à 3e4 contre 10 s sur GPU ( ~90× ), anormal, à regarder.
+- Suite 3e5 ( 2026-10-18 ) : reprise du nuage à 40 pas, +60 pas de Lloyd ( τ = 1,8 ; ~20 s par pas ), puis 20 pas de dômes ( 7 sous-diracs par dôme ; ~46 min par pas : Newton ~200 itérations par vue à chaque pas, le démarrage à chaud ne prend pas ; rayon de départ 0,0057 < pixel 0,0078 ). Total 16,9 h.
+  - dans la matière : 85,2 % → 88,9 % ( fin des diracs ) → 90,3 % ( fin des dômes ) ; distance moyenne 0,0047 → 0,0035 → 0,0031 ; couverture 0,0073 → 0,0069 ; rayon des dômes 0,0057 → 0,0062 ( demi-paroi 0,0073 ).
+  - les parois sont plus nettes ; les diracs restés dans les pores sont rouges ( dérivée en masse : ils voudraient maigrir ).
+- Ajouts : coloration bleu → blanc → rouge ( tiraillement, dérivée en masse ) en 3D et en tranches colorées ( Visualizer 2D, 1re image = l'objet ) ; dômes ( quadrature 7 points ) ; `--resume` ( avec les rayons ), point de reprise à chaque instantané.
+- Hugo ( 2026-10-18 ) : multi-échelle ; dômes abandonnés en 3D pour l'instant ( la quadrature à 7 points ne rend pas le problème différentiable non plus ) ; privilégier la vue 3D ; cylindre 5 à 10 fois moins épais.
+- Fait : `Reconstruction3d.multiscale` ( + `split`, `subsample` ), dômes retirés ; `VoronoiFoam( height )` avec un détecteur aussi haut que l'objet ( 256 × 34 pour h = 0,2 ) ; pages 3D avec l'objet en 1re image ; frames de tailles variables.
+- Mousse mince ( h = 0,2, 59 cellules de ~0,19, porosité 80 % ), 60 vues, multi-échelle 1000 → 4000 → 16000 → 50000 ( 30 pas par étage, 60 au dernier, τ = 1,8 ) : 12 min sur la 2080 Ti, ~4 s par pas à 5e4. Dans la matière : 79 % → 85 % → 89 % → 92,6 % ; couverture 0,0070. Les parois sont reconnaissables en 3D ; le tiraillement est le plus fort au bord du cylindre.
+- Hugo : plus d'itérations à chaque étage ; vraie question de visualisation ( profondeur ) ; HTML autonome privilégié ; un `.blend` avec l'animation et un éclairage soigné en plus.
+- Multi-échelle long ( 100 pas par étage, 200 au dernier ) : dans la matière 88,4 % → 91,7 % → 93,3 % → 95,0 % ; couverture 0,0068 ; déplacement moyen final 1,6e-5. 4,6 h au total, mais les étages à 1000–16000 diracs ont tourné à ~50 s par pas ( lmo encombré ) contre ~1–3 s attendus ; au repos, un solve à chaud prend 29 ms à 1000 diracs ( 2 itérations de Newton : le correctif de démarrage à chaud marche ).
+- Visualizer ( sdot ) : points en vraies sphères ( profondeur par pixel, lumière diffuse + spéculaire ) et occlusion ambiante en espace écran, réglables dans le menu.
+- `otrec.viz.blend` : `scene.blend` à côté du run ( Blender en mode batch, sans rendu ) : l'objet puis un nuage par instantané, puis un tour de caméra ; points-sphères Cycles colorés par un attribut ( `Show` : 0 tiraillement, 1 masse, 2 gris ) ; trois lumières de surface, AgX. Pas de Blender sur lmo : généré en local.
+- Hugo ( 2026-10-18/19 ) : beaucoup plus d'itérations aux premiers étages ; rayons d'affichage plus gros quand il y a moins de diracs ; profondeur dans Blender ; l'objet de référence continu et propre ( pas un échantillon ) ; calculer sur n22 quand lmo est pris.
+- Fait : `--stage_steps` ( pas par étage ) ; rayon d'affichage par instantané ( ~1/3 de l'espacement ) en HTML et Blender ; échelle de couleurs unique pour tout le run ( dérivée en masse par défaut dans Blender ) ; sol sombre + ombres + exposition réduite ; l'objet en surface : voxels → grille OpenVDB → isosurface 0,5 dans Blender ( `object.vdb` ), maillage allégé `surface.npz` pour les pages HTML.
+- n22 ( A6000 ), 2000:1000:500:300 pas : 72 min ; dans la matière 96,1 % dès 1000 diracs ( 88 % après 100 pas ), 96,1 % à 50 000 ; couverture 0,0068 ; 0,75 à 2,3 s par pas. Des diracs restent dans les cellules.
+- Précision ( 2026-10-19, n22 ) : 200 pas finaux depuis le nuage convergé, auto/fp64 × tol 1e-4/1e-8 : trajectoires identiques à 7 chiffres ( coût 1,26621e-4 → 1,25448e-4 ). Ce n'est pas la précision.
+- `Reconstruction3d.plbfgs` : L-BFGS préconditionné par le pas de Lloyd ( M = n/2 H⁻¹ par dirac, mise à l'échelle γ, Armijo depuis α = 1 ) ; `--optimizer=plbfgs`. Indicateur `disp_z_mean` / `disp_z_max` par pas.
+- Lloyd ( τ = 1,8 ) contre L-BFGS préconditionné, 200 itérations depuis le nuage convergé ( lmo, n22 réservé ) : baisse du coût 1,17e-6 contre 2,59e-6 ( ×2,2 ) pour 200 contre 205 évaluations ; écart-type de la dérivée en masse −8 % contre −16 % ; dans la matière 96,15 % contre 96,29 %. L-BFGS gagne, mais les deux restent lents à ce stade.
+- Multi-échelle L-BFGS préconditionné ( lmo, 2000:1000:500:300 ) contre Lloyd ( n22 ), en fin d'étage :
+  - 1 000 : coût 5,946e-3 contre 5,932e-3 ; dans la matière 94,5 % contre 96,1 % ( L-BFGS cale à mi-étage : Armijo échoue, 5,6 évaluations par itération ) ;
+  - 4 000 : 1,470e-3 contre 1,483e-3 ; 96,2 % contre 95,5 % ;
+  - 16 000 : 3,733e-4 contre 3,798e-4 ; 96,1 % contre 95,6 % ;
+  - 50 000 : 1,231e-4 contre 1,266e-4 ; 96,6 % contre 96,1 % ; couverture 0,00673 contre 0,00681 ; écart-type de la dérivée en masse 1,03e-4 contre 1,41e-4.
+  - Déplacement max en z par étage : 0,061 → 0,041 → 0,020 → 0,012 ( la cellule fait ~0,19, le pixel 0,0078 ).
+  - Les mêmes plaques rouges et bleues de dérivée en masse, aux mêmes endroits, avec les deux méthodes.
+- Hugo ( 2026-10-19 ) : comprendre les plaques sur 5000 diracs, tranches de demi-épaisseur ( 0,1 ) et 10× plus minces ( 0,02 ), pour voir si c'est le schéma ( le 1D marche très bien ). `VoronoiFoam( seed_height )` : mêmes graines, tranche plus mince, mêmes parois ( ~0,014 ).
+- Lloyd, 1250 → 5000, 2000 + 2000 pas ( lmo ) :
+  - h = 0,1 : coût 6,46e-4, 95,2 % dans la matière ; h = 0,02 : 1,99e-4, 95,3 %, réseau de parois très net.
+  - Les plaques persistent dans les deux cas : la part grande échelle de la dérivée en masse ( moyenne sur 200 voisins ) garde 48 % ( h = 0,1 ) et 55 % ( h = 0,02 ) de son écart-type ; elle tombe de 0,85 au départ à ~0,5 à la fin du 1er étage, puis ne bouge plus.
+  - h = 0,02 : déplacement max en z au dernier étage 0,027, plus que l'épaisseur de la tranche.
+- Comparaison directe sur la tranche médiane ( 2D, 60 projections × 256, 5000 diracs, même départ, 4000 itérations ), mesurée par le transport semi-discret 1D EXACT ( `otrec.semidiscrete1d`, forme close, validé : frontières de Laguerre à 6e-15, barycentres et coût = Monte-Carlo ) :
+  - (A) chemin 1D d'otrec ( grille fine, tentes de largeur h, L-BFGS ) : coût exact 8,26e-6 ; 98,3 % dans la tranche ; σ de la dérivée en masse 5,6e-5, part grande échelle 0,41 ;
+  - (B) transport exact + Lloyd relevé : FIGÉ dès ~1000 itérations à 1,809e-5 ( identique à 7 chiffres ensuite ) : point fixe exact, coût ×2,2 ; 94,6 % ; σ 1,4e-4, part 0,42 ;
+  - (B') transport exact + L-BFGS préconditionné : figé dès ~500 itérations à 1,415e-5 ; 95,8 % ; σ 1,5e-4, part 0,74.
+  - Conclusion provisoire : le paysage du W2 semi-discret exact avec des diracs a des points critiques où Lloyd et L-BFGS se figent ; le chemin 1D évite ces pièges grâce au lissage des tentes ( largeur h ). Le transport 2D de sdot ne converge pas sur des diracs alignés ( stagnation ), d'où l'abandon de la variante « radiographies à une ligne ».
+- Sortie du point figé ( tranche, même mesure exacte ; départ : Lloyd exact figé à 1,809e-5, 94,6 % ) :
+  - bruit 0,1 / 0,3 / 1 espacement puis Lloyd exact : 1,700e-5 / 1,633e-5 / 1,592e-5, refigé après 470–800 itérations ( 95,0–95,4 % ) ;
+  - transport lissé ( chemin 1D, tentes de largeur h ) depuis ce point : 8,80e-6 exact, 98,2 % : sort entièrement du piège ; puis Lloyd exact : 8,43e-6 ;
+  - témoin : Lloyd exact depuis le point du chemin 1D : 8,26e-6 → 7,90e-6 ( il affine, figé après ~110 itérations ).
+  - Confirmé : le paysage exact des diracs piège Lloyd ( le bruit n'en sort pas ) ; le lissage de largeur h l'évite ; Lloyd exact est un bon raffinement une fois dans le bon bassin.
+- Hugo : le 1D converge bien avec assez d'angles. Vérifié ( animation du chemin 1D sur la tranche, 5000 diracs, 4000 itérations ) : au-delà d'1 bin de la tranche, 1,6 % à 60 projections, 0,20 % à 180 ( au-delà de 2 bins : 0,74 % contre 0,14 % ). Les « dehors » à 60 vues sont des diracs isolés au milieu des cellules. Pages : runs/lmo/anim1d/v60, v180 ( `exp_slice2d.py::anim1d` ).
+- Hugo ( 2026-10-21 ) : relancer la 3D en L-BFGS avec 600 vues et multi-échelle ; réfléchir à l'usage des diracs « rouges » ( heuristique : peu de déplacement + forte dérivée en masse → grand saut aléatoire ).
+- `otrec.relocation.Relocation` ( modes random / blue ) ; L-BFGS : repli sur un pas de Lloyd quand la recherche linéaire échoue.
+- Tranche, 600 projections, multi-échelle 1250 → 5000, Lloyd exact 1500 + 1500 :
+  - sans relocalisation : coût 1,469e-4 ; au-delà de 0,5 / 1 / 2 bins : 0,20 % / 0,08 % / 0,02 % ( 4 diracs sur 5000 au-delà d'1 bin ) ;
+  - random ( saut de 3 espacements ) : 1,911e-4 ; 0,70 % / 0,40 % / 0,22 % ; 600 déplacés ;
+  - blue ( à côté d'un dirac bleu ) : 1,684e-3 ( le dernier saut tombe à la dernière itération : pas de temps pour reconverger ) ; 0,36 % / 0,14 % / 0,04 %.
+  - Avec assez d'angles et le multi-échelle, il n'y a plus de diracs isolés à traiter ; l'heuristique telle quelle dégrade ( le top 1 % existe toujours et les diracs convergés sont « immobiles » ).
+- Hugo : critère ABSOLU sur la dérivée en masse, et réitérer après. `Relocation( nb_views, level )` : relocalise quand dérivée en masse > level × A × espacement² ; calibré sur la tranche ( chemin 1D, fin ) : à 60 vues, level 0,08 sélectionne 23 diracs dont 20 vrais égarés ( > 2 bins ) ; à 180 vues, 3 sur 3. Les égarés restants ont une dérivée en masse ≈ 0 ou négative : le critère ne les voit pas. Test : pas de saut pendant les `warmup` premières ni les `settle` dernières itérations d'un étage.
+- Test 1D du critère absolu ( tranche, Lloyd exact, multi-échelle 1250 → 5000, level 0,08, warmup / settle 300, tous les 50 pas ) :
+  - 60 vues : sans : coût 1,572e-5, au-delà de 1 / 2 bins 4,0 % / 2,18 % ; random : 1,060e-5 ( −33 % ), 2,2 % / 0,78 % ( −64 % au-delà de 2 bins ), 3064 sauts ; blue : 1,842e-5, 5,5 % / 3,42 %, 16144 sauts ( il crée de nouveaux rouges en cascade ) ;
+  - 600 vues : 0 à 2 sauts, résultats inchangés ( pas d'effet de bord quand il n'y a pas d'égarés ).
+  - Retenu : mode random avec le critère absolu ; blue écarté.
+- Hugo ( 2026-10-21 ) : arrêter la 3D tant que le 2D n'est pas clair ( run 600 vues arrêté à l'étage 16 000 ) ; regarder la hessienne aux points coincés ; tester un gradient à pas testés.
+- Analyse ( tranche, 60 vues, Lloyd exact figé, 109 diracs > 2 bins ) :
+  - gradient ~2e-11 partout ( égarés compris ) : point critique exact ;
+  - hessienne par différences finies, δ = 1e-4 espacement : bloc 2×2 = ( 2/N ) Σ e eᵀ exactement ( 0,012 ), aucune valeur propre négative, aucun couplage : dans une « pièce » ( ordre des projections fixé ), le coût est une quadratique convexe ;
+  - δ = 0,3 espacement ( à travers les changements de rang ) : 3 valeurs propres négatives sur 24 ( −3,6e-4 ) et un couplage apparaît : la non-convexité vient des échanges de rang, à l'échelle de l'espacement ;
+  - profils en déplaçant un égaré seul vers la paroi la plus proche : 3 sur 8 descendent ( −1,2 à −1,8e-8 vers t = 0,6–0,9 ) après une barrière infime, 5 sur 8 montent ( il faudrait bouger aussi les voisins ) ;
+  - gradient à pas testés ( 0,5 à 100 × le pas de Lloyd ) : aucun pas ne baisse le coût.
+  - Conclusion : des minima locaux d'une fonction quadratique par morceaux ( minimum de quadratiques convexes ), pas des points selles ; ni L-BFGS ni un gradient n'en sortent ; il faut des sauts finis ( relocalisation ) ou un lissage ( tentes du chemin 1D ).
+- Hugo : tester les tentes en 1D ; en semi-discret « pur », diracs sur les pixels et une distribution continue SumOfTents ( SumOfGaussians : la queue large nuisait ) ; ou directement W2( Image, SumOfTents ) en 1D. Retenu d'abord : (a) W2 exact entre l'image et une SumOfTents ( `semidiscrete1d.transport_tents`, forme close : densité linéaire par morceaux, transport quadratique par morceau, Gauss-Legendre 3 points exact ; validé : limite w → 0 = diracs, Monte-Carlo, gradient 2/N ( x − b ) = différences finies à 8 chiffres ).
+- Tranche, 60 vues, multi-échelle 1250 → 5000, Lloyd exact 1500 + 1500, selon la demi-largeur des tentes :
+  - w = 0 ( diracs ) : au-delà de 1 / 2 bins 4,0 % / 2,18 % ; FIGÉ ( variation 1e-13 sur 200 pas ) ;
+  - w = dw/8 : 1,74 % / 0,68 % ; w = dw/2 : 0,46 % / 0,14 % ; w = dw : 0,08 % / 0,02 % ;
+  - avec des tentes, l'optimisation ne fige pas ( le coût baisse encore de 1,4–2,4 % sur les 200 derniers pas ).
+  - Confirmé : les égarés viennent des coins du coût aux échanges de rang ; des tentes de la largeur d'un bin les font disparaître ( à 60 vues, mieux que les diracs à 600 vues ).
+- Tranche, 600 vues, 1000 + 1000 : diracs ( w = 0 ) : au-delà de 0,5 / 1 / 2 bins 0,18 % / 0,08 % / 0,02 % ; tentes w = dw/2 : 0 % / 0 % / 0 %, et même le coût mesuré avec des diracs exacts est plus bas ( 1,430e-4 contre 1,470e-4 ).
+- Hugo : la référence est pleine ( ne pas l'afficher en boules ) ; 1900 itérations, c'est trop ; W2 tentes/image est-il optimisé, GPU ?
+  - La référence est bien pleine ( données calculées depuis l'objet voxelisé ) ; seul l'affichage était un échantillon : les pages tracent maintenant la tranche pleine ( `slice_faces` ).
+  - Les 1900 itérations étaient du Lloyd. L-BFGS préconditionné sur les tentes ( dw/2, 600 vues, 100 + 100 itérations ) : au-delà de 0,5 / 1 / 2 bins 0,02 % partout ( contre 1,42 % / 0,90 % / 0,54 % pour Lloyd au même nombre d'itérations ) : ~10× moins d'itérations que Lloyd ( 2 × 1000 ).
+  - `transport_tents` est une référence numpy ( CPU, vue par vue ) ; la voie optimisée existe : `sdot.projected1d` ( noyaux CUDA fusionnés ) calcule déjà W2( image, SumOfTents ) sur grille fine, avec une largeur de tente fixée à une cellule fine ( dw/8 ) ; il suffit d'en faire un paramètre.
+- L-BFGS préconditionné sur tentes ( dw/2, 600 vues, multi-échelle 1250 → 5000 ) selon le budget et la mémoire :
+  - 50 + 50, mémoire 10 : 0,16 % / 0,02 % / 0 ; mémoire 30 : 0,10 % / 0 / 0 ;
+  - 100 + 100, mémoire 10 : 0,02 % / 0,02 % / 0,02 % ; mémoire 30 : 0,02 % / 0 / 0, coût tentes 2,916e-5 ( Lloyd 2 × 1000 : 2,954e-5 ).
+  - Retenu : L-BFGS mémoire 30 ; ~100 itérations au total suffisent sur la tranche ( 20× moins que Lloyd ).

@@ -173,7 +173,7 @@ if test( "disk_image_mass_shortcut" ):
 
     # the same image, but without `current_mass`: `mass` then goes through the kernel
     from sdot import Image, OtPlan1d
-    plain = Image( values = proj.values( truth ), origin = [ proj.s_min ], frame = [ [ proj.dw ] ],
+    plain = Image( values = proj.values( truth ), origin = [ proj.s_min ], pixel_frame = [ [ proj.dw ] ],
                    batch_axes = [ sino.num_angle ] )
     via_kernel = np.asarray( plain.mass )
 
