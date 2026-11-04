@@ -142,6 +142,9 @@ def write_view( npz, out_dir = None, title = "Reconstruction 3D", max_points = 2
                             out / "convergence.html", title = title, xlabel = "pas", ylabel = "" )
     write_convergence_html( series( "nb_iter", "nb_diag", "time", "nb_points" ), out / "newton.html", title = f"{ title } — Newton par vue",
                             xlabel = "pas", ylabel = "", log_y = False )
+    if any( k.startswith( "t_" ) for k in H ):
+        write_convergence_html( series( *[ k for k in H if k.startswith( "t_" ) ] ), out / "times.html", title = f"{ title } — temps cumulé par phase ( s )",
+                                xlabel = "pas", ylabel = "", log_y = False )
 
     last = { k: float( v[ -1 ] ) for k, v in H.items() if np.issubdtype( np.asarray( v ).dtype, np.number ) }
     rows = "".join( f"<tr><td>{ k }</td><td>{ v:.4g}</td></tr>" for k, v in last.items() )
@@ -149,7 +152,8 @@ def write_view( npz, out_dir = None, title = "Reconstruction 3D", max_points = 2
         ( "cloud.html", "<b>le nuage en 3D</b>, coloré par le tiraillement des vues ( bleu : d’accord, rouge : tiraillé ) ; 1re image : l’objet" ),
         ( "mass.html", "le nuage en 3D, coloré par la dérivée en masse ( bleu : grossir, blanc : rien, rouge : maigrir )" ),
         ( "slice_pull.html", "une tranche en z, tiraillement" ), ( "slice_mass.html", "une tranche en z, dérivée en masse" ),
-        ( "convergence.html", "les courbes" ), ( "newton.html", "le coût des solves, et le nombre de diracs" ) ] )
+        ( "convergence.html", "les courbes" ), ( "newton.html", "le coût des solves, et le nombre de diracs" ) ]
+        + ( [ ( "times.html", "le temps cumulé de chaque phase de la perte grille" ) ] if any( k.startswith( "t_" ) for k in H ) else [ ] ) )
     ( out / "index.html" ).write_text( f"""<!doctype html><html lang="fr"><head><meta charset="utf-8"><title>{ title }</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>:root{{--bg:#fff;--fg:#111;--mu:#666}}@media (prefers-color-scheme:dark){{:root{{--bg:#16171a;--fg:#eee;--mu:#999}}}}

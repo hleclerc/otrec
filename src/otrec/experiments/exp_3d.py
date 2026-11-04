@@ -4,6 +4,8 @@ view ).
     errand run --no-queue -o --env lmo-jax "otrec/src/otrec/experiments/exp_3d.py::3d"                     # a thin foam, multiscale
     errand run --no-queue -o --env lmo-jax "otrec/src/otrec/experiments/exp_3d.py::3d" --n=200000 --height=0.4
     errand run --no-queue -o --env lmo-jax "otrec/src/otrec/experiments/exp_3d.py::3d" --device=cpu        # lmo's CPUs
+    errand run --no-queue -o --env lmo-jax "otrec/src/otrec/experiments/exp_3d.py::3d" --phantom=shells --n=2000 \
+        --n_init=2000 --stage_optimizer=sliced --stage_steps=1000 --grid_sigmas=8:4:2:1:0                 # the grid loss, blurred
 
 The default phantom is a Voronoi foam ( `phantoms.VoronoiFoam` ) in a THIN cylinder, so that the 3D view shows every wall.
 `optimizer = multiscale` starts with `n_init` diracs and multiplies them by `factor` after each stage of `steps` Lloyd
@@ -17,7 +19,7 @@ from errand import Param, experiment
 
 
 if p := experiment( "3d",
-                    phantom    = Param( "voronoi", choices = [ "voronoi", "foam", "balls", "hollow", "touching", "thin" ] ),
+                    phantom    = Param( "voronoi", choices = [ "voronoi", "foam", "balls", "hollow", "touching", "thin", "shells" ] ),
                     height     = Param( 0.2, help = "voronoi: the height of the cylinder ( radius 0.8 )" ),
                     seed_height = Param( 0.0, help = "voronoi: the height the cells are drawn for ( 0: `height` ); a thinner `height` is then a slab of the same foam" ),
                     cell       = Param( 0.19, help = "voronoi: the size of a cell ( the number of cells follows from the volume )" ),
@@ -42,6 +44,11 @@ if p := experiment( "3d",
                     pixel_blur_steps = Param( 30, help = "pixel2d: steps of each blurred stage" ),
                     pixel_snapshot = Param( 5, help = "pixel2d: a history entry and a frame every that many steps" ),
                     pixel_workers = Param( 0, help = "pixel2d: the views spread over that many worker processes ( 0: one per card, none on the host )" ),
+                    grid_sigmas = Param( "", help = "grid2d: the global blur of each stage, in pixels, colon-separated ( e.g. 8:4:2:1:0 ): the measured pixels as diracs of a grid against a P1 image of projected balls, both blurred ( `grid_transport` )" ),
+                    grid_backgrounds = Param( "1e-1:3e-2:1e-2:3e-3:1e-3", help = "grid2d: the background of each stage, fraction of the mean ( the last for the stages beyond )" ),
+                    grid_steps = Param( "30:30:30:30:100", help = "grid2d: the L-BFGS steps of each stage ( the last for the stages beyond )" ),
+                    grid_radius = Param( 2.5, help = "grid2d: the radius of the projected kernels, in pixels" ),
+                    grid_profile = Param( "smooth", choices = [ "smooth", "ball" ], help = "grid2d: the projected kernel, ( 1 - r^2 / R^2 )^2 or a uniform ball ( rough: infinite slope at the rim )" ),
                     directions = Param( 16, help = "sliced: directions per radiograph" ),
                     sliced_method = Param( "grid", choices = [ "grid", "exact" ], help = "sliced: the 1D transport of the tents" ),
                     sliced_scale = Param( 8, help = "sliced, grid: fine cells per bin" ),
@@ -124,6 +131,15 @@ if p := experiment( "3d",
         rec.pixel2d( p.refine, scale = p.pixel_scale, background = p.pixel_background, tol = p.pixel_tol, split = p.pixel_split,
                      radius = p.pixel_radius * min( radio.du, radio.dv ), cards = p.pixel_workers or None,
                      snapshot_every = p.pixel_snapshot, truth = truth, on_snapshot = checkpoint )
+    if str( p.grid_sigmas ).strip():
+        sigmas = [ float( v ) for v in str( p.grid_sigmas ).split( ":" ) ]
+        each = lambda txt, cast: [ cast( v ) for v in str( txt ).split( ":" ) ]
+        bgs, nbs = each( p.grid_backgrounds, float ), each( p.grid_steps, int )
+        for k, sigma in enumerate( sigmas ):
+            bg, nb = bgs[ min( k, len( bgs ) - 1 ) ], nbs[ min( k, len( nbs ) - 1 ) ]
+            print( f"grid stage { k + 1 } / { len( sigmas ) }: blur { sigma } px, background { bg }, { nb } steps", flush = True )
+            rec.grid2d( nb, radius = p.grid_radius, sigma = sigma, background = bg, profile = p.grid_profile, snapshot_every = p.pixel_snapshot, truth = truth,
+                        on_snapshot = checkpoint )
     if p.final_steps:
         rec.configure( precision = p.final_precision, tol = p.final_tol, max_iter = 200 )
         print( f"final steps: precision { p.final_precision }, tol { p.final_tol }" )
@@ -131,7 +147,7 @@ if p := experiment( "3d",
     wall = time.perf_counter() - t0
 
     out = p.out_dir
-    keys = [ k for k in rec.history[ 0 ] if isinstance( rec.history[ 0 ][ k ], ( int, float, np.number ) ) ]
+    keys = list( dict.fromkeys( k for h in rec.history for k in h if isinstance( h[ k ], ( int, float, np.number ) ) ) )
     hist = { f"h_{ k }": np.array( [ h.get( k, np.nan ) for h in rec.history ] ) for k in keys }
     frames = rec.frames   # their sizes change from a stage to the next: stored end to end, `f_sizes` says where they cut
     np.savez_compressed( out / "run.npz",
@@ -148,10 +164,10 @@ if p := experiment( "3d",
                          cost_per_view = np.stack( [ h[ "cost_per_view" ] for h in rec.history ] ), **hist )
     last = rec.history[ -1 ]
     summary = dict( params = { k: getattr( p, k ) for k in ( "phantom", "height", "seed_height", "cell", "porosity", "n", "n_init", "factor", "views",
-                                                             "pixels", "optimizer", "stage_optimizer", "directions", "sliced_method", "sliced_scale", "sliced_dtype", "refine", "pixel_scale", "pixel_background", "pixel_tol", "pixel_split", "pixel_radius", "pixel_blur", "pixel_blur_steps", "pixel_workers", "steps", "last_steps", "stage_steps", "tau", "start", "resume",
+                                                             "pixels", "optimizer", "stage_optimizer", "directions", "sliced_method", "sliced_scale", "sliced_dtype", "refine", "pixel_scale", "pixel_background", "pixel_tol", "pixel_split", "pixel_radius", "pixel_blur", "pixel_blur_steps", "pixel_workers", "grid_sigmas", "grid_backgrounds", "grid_steps", "grid_radius", "grid_profile", "steps", "last_steps", "stage_steps", "tau", "start", "resume",
                                                              "final_steps", "final_precision", "final_tol" ) },
                     phantom = ph.name, thickness = getattr( ph, "thickness", None ),
-                    wall = wall, steps = len( rec.history ), **{ k: last[ k ] for k in keys } )
+                    wall = wall, steps = len( rec.history ), **{ k: last[ k ] for k in keys if k in last } )
     # how much the z of the points cling to the detector rows ( the centers of the pixels along the rotation axis ): the
     # fraction in the central half of a row, 0.5 for points spread evenly
     dvz = radio.dv

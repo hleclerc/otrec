@@ -187,6 +187,20 @@ def balls( nb = 3, seed = 0, rmin = 0.25, rmax = 0.5, box = 1.0 ):
     return Phantom( c, r, name = f"balls{ nb }" )
 
 
+def shells( nb = 3, seed = 0, rmin = 0.25, rmax = 0.5, thickness = 0.05, box = 1.0 ):
+    """`nb` random disjoint hollow balls in `[ -box, box ]^3`: shells of `thickness`, each a ball minus a ball of density -1"""
+    rng = np.random.default_rng( seed )
+    c, r = [ ], [ ]
+    while len( c ) < nb:
+        ci, ri = rng.uniform( -box + rmax, box - rmax, 3 ), rng.uniform( rmin, rmax )
+        if all( np.linalg.norm( ci - cj ) > ri + rj + 0.05 for cj, rj in zip( c, r ) ):
+            c.append( ci )
+            r.append( ri )
+    ph = Phantom( c + c, r + [ ri - thickness for ri in r ], [ 1.0 ] * nb + [ -1.0 ] * nb, name = f"shells{ nb }" )
+    ph.thickness = thickness
+    return ph
+
+
 def hollow():
     """a hollow ball ( a shell ) and a full one"""
     return Phantom( [ [ 0.2, 0.0, 0.0 ], [ 0.2, 0.0, 0.0 ], [ -0.7, 0.3, 0.4 ] ], [ 0.7, 0.45, 0.25 ], [ 1.0, -1.0, 1.0 ], name = "hollow" )
@@ -392,4 +406,4 @@ class VoronoiFoam( Phantom ):
         return r
 
 
-PHANTOMS = dict( voronoi = VoronoiFoam, foam = foam, balls = balls, hollow = hollow, touching = touching, thin = thin )
+PHANTOMS = dict( voronoi = VoronoiFoam, foam = foam, balls = balls, hollow = hollow, touching = touching, thin = thin, shells = shells )

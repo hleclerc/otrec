@@ -25,6 +25,7 @@ converged cloud ( a dirac far from the object is pulled in while it is cheap to 
 views: same shapes ), the weights of each view kept on the device of that view; views go to the devices in turn
 ( `k mod nb_devices` ) and jax's asynchronous dispatch overlaps them.
 """
+import collections
 import os
 import time
 
@@ -524,9 +525,63 @@ class Reconstruction3d:
         each warm started ); a history entry and a frame every `snapshot_every` accepted steps. `ftol`: scipy's test on the
         decrease relative to max( |f|, 1 ) -- an ABSOLUTE test for this loss ( ~1e-3 ): 0, the default, runs the steps.
         `first_move`: the largest coordinate move of the first trial, in mean nearest-neighbour spacings"""
+        setting = dict( scale = scale, radius = radius, background = background, tol = tol, cards = cards, split = split )
+
+        def retries():
+            views = self._pixel[ 2 ]
+            r = getattr( views, "nb_cold_retries", None )
+            return sum( pt.nb_cold_retries for pt in views ) if r is None else r
+
+        return self._lbfgs_2d( lambda x: self.pixel_value_and_grad( x, **setting ), retries, nb_steps, "pixel2d", ftol,
+                               snapshot_every, truth, on_snapshot, first_move )
+
+    def grid_views( self, tol = 1e-3, max_iter = 200 ):
+        """per view a `grid_transport.GridTransport2d` ( the dedicated grid solver of sdot ), made once. `tol`: on the mass of
+        each cell, relative to the mean mass of a pixel"""
+        if getattr( self, "_grid", None ) is None:
+            from .grid_transport import GridTransport2d
+            u_min, v_min, du, dv, nb_u, nb_v = self.geometry.detector
+            if abs( du - dv ) > 1e-12 * du or nb_u != nb_v:
+                raise ValueError( "grid2d: a square detector with square pixels" )
+            vals = self.radiographs.with_background( 0.0 )
+            self.grid_times = collections.defaultdict( float )
+            self._grid = [ GridTransport2d( vals[ k ], [ u_min, v_min ], du, tol = tol / ( nb_u * nb_v ), max_iter = max_iter, times = self.grid_times ) for k in range( self.geometry.nb_views ) ]
+        return self._grid
+
+    def grid_value_and_grad( self, points = None, radius = 2.5, sigma = 0.0, background = 1e-3, profile = "smooth" ):
+        """the grid loss summed over the views, and its gradient with respect to the points. `radius`, `sigma`: in pixels;
+        `profile`: the projected kernel ( `grid_transport` )"""
+        views = self.grid_views()
+        du = self.geometry.detector[ 2 ]
+        t_start = time.perf_counter()
+        x = jnp.asarray( self.points if points is None else points, dtype = jnp.float64 )
+        total, grad = 0.0, jnp.zeros( x.shape )
+        for k, gt in enumerate( views ):
+            t = time.perf_counter()
+            uv, vjp = jax.vjp( lambda y: self.geometry.project( y, k ), x )
+            uv.block_until_ready()
+            self.grid_times[ "project" ] += time.perf_counter() - t
+            c, g_uv = gt.value_and_grad( uv, radius * du, sigma, background, profile = profile )
+            total += c
+            t = time.perf_counter()
+            grad = ( grad + vjp( g_uv )[ 0 ] ).block_until_ready()
+            self.grid_times[ "project_backward" ] += time.perf_counter() - t
+        self.grid_times[ "total" ] += time.perf_counter() - t_start
+        return total, np.asarray( grad )
+
+    def grid2d( self, nb_steps = 30, radius = 2.5, sigma = 0.0, background = 1e-3, profile = "smooth", ftol = 0.0, snapshot_every = 1,
+                truth = None, on_snapshot = None, first_move = 0.05 ):
+        """L-BFGS on the grid loss ( `grid_value_and_grad` ) at a fixed blur `sigma` ( pixels ): one stage of the global blur.
+        The views keep their weights from one stage to the next"""
+        return self._lbfgs_2d( lambda x: self.grid_value_and_grad( x, radius, sigma, background, profile ),
+                               lambda: sum( gt.nb_cold_retries for gt in self.grid_views() ), nb_steps, "grid2d", ftol,
+                               snapshot_every, truth, on_snapshot, first_move, times = lambda: self.grid_times )
+
+    def _lbfgs_2d( self, value_and_grad, retries, nb_steps, label, ftol, snapshot_every, truth, on_snapshot, first_move, times = dict ):
+        """scipy's L-BFGS on a 2D loss, one evaluation per trial; a history entry and a frame every `snapshot_every` accepted
+        steps. `times()`: seconds per phase so far, kept in the entries as `t_<phase>`"""
         from scipy.optimize import minimize
         from scipy.spatial import cKDTree
-        setting = dict( scale = scale, radius = radius, background = background, tol = tol, cards = cards, split = split )
         shape = self.points.shape
         base = len( self.history )
         nb_evals = [ 0 ]
@@ -538,26 +593,23 @@ class Reconstruction3d:
         # x / unit, with unit chosen so that this first trial moves no coordinate by more than `first_move` spacings
         x0 = np.asarray( self.points )
         spacing = float( cKDTree( x0 ).query( x0, k = 2 )[ 0 ][ :, 1 ].mean() ) if len( x0 ) > 1 else 1.0
-        c0, g0 = self.pixel_value_and_grad( x0, **setting )
+        t0 = time.perf_counter()
+        c0, g0 = value_and_grad( x0 )
         g0 = np.asarray( g0 ).ravel()
         unit = first_move * spacing * np.linalg.norm( g0 ) / max( np.abs( g0 ).max(), 1e-300 )
-        first = [ ( c0, g0 ) ]
+        first = [ ( c0, g0, time.perf_counter() - t0 ) ]
 
         def fun( flat ):
             t0 = time.perf_counter()
             if first:
-                c, g = first.pop()
+                c, g, dt = first.pop()
             else:
-                c, g = self.pixel_value_and_grad( flat.reshape( shape ) * unit, **setting )
+                c, g = value_and_grad( flat.reshape( shape ) * unit )
+                dt = time.perf_counter() - t0
             nb_evals[ 0 ] += 1
             cache[ "c" ] = c
             if self.verbose:
-                views = self._pixel[ 2 ]
-                retries = getattr( views, "nb_cold_retries", None )
-                if retries is None:
-                    retries = sum( pt.nb_cold_retries for pt in views )
-                print( f"    eval { nb_evals[ 0 ]:4d}  { c:.6e}  |g| { np.linalg.norm( g ):.3e}  { time.perf_counter() - t0:.1f} s  "
-                       f"cold retries { retries }", flush = True )
+                print( f"    eval { nb_evals[ 0 ]:4d}  { c:.6e}  |g| { np.linalg.norm( g ):.3e}  { dt:.1f} s  cold retries { retries() }", flush = True )
             return c, unit * np.asarray( g ).ravel()
 
         step = [ 0 ]
@@ -565,15 +617,18 @@ class Reconstruction3d:
         def callback( xk ):
             step[ 0 ] += 1
             if step[ 0 ] % max( 1, snapshot_every ) == 0:
-                rec = self._record_light( base + step[ 0 ], unit * xk.reshape( shape ), cache[ "c" ], "pixel2d", t_last, truth, on_snapshot )
+                rec = self._record_light( base + step[ 0 ], unit * xk.reshape( shape ), cache[ "c" ], label, t_last, truth, on_snapshot )
                 rec[ "nb_evals" ] = nb_evals[ 0 ]
+                rec.update( { f"t_{ k }": v for k, v in times().items() } )
 
         res = minimize( fun, x0.ravel() / unit, jac = True, method = "L-BFGS-B", callback = callback,
                         options = dict( maxiter = nb_steps, ftol = ftol, gtol = 0.0, maxcor = 10 ) )
         if not self.history or self.history[ -1 ][ "step" ] != base + step[ 0 ]:
-            self._record_light( base + step[ 0 ], unit * res.x.reshape( shape ), float( res.fun ), "pixel2d", t_last, truth, on_snapshot )
+            self._record_light( base + step[ 0 ], unit * res.x.reshape( shape ), float( res.fun ), label, t_last, truth, on_snapshot )
         if self.verbose:
-            print( f"  pixel2d, { self.nb_points } diracs: { step[ 0 ] } steps, { nb_evals[ 0 ] } evaluations ( { res.message } )", flush = True )
+            print( f"  { label }, { self.nb_points } diracs: { step[ 0 ] } steps, { nb_evals[ 0 ] } evaluations ( { res.message } )", flush = True )
+            if times():
+                print( "  seconds so far: " + "  ".join( f"{ k } { v:.1f}" for k, v in times().items() ), flush = True )
         self.set_points_keep( unit * res.x.reshape( shape ) )
         return self
 

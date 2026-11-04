@@ -211,3 +211,23 @@ if test( "the 2D loss in worker processes ( views spread over cards ) is the sam
     c2, g2 = two.pixel_value_and_grad( tol = 1e-9, cards = 2 )
     two.close_pixel_workers()
     assert abs( c1 - c2 ) < 1e-12 * c1 and np.abs( g1 - g2 ).max() < 1e-10 * np.abs( g1 ).max(), ( c1, c2, np.abs( g1 - g2 ).max() )
+
+
+if test( "the grid loss ( pixels as grid diracs against a P1 image of projected balls ): the dedicated solver, its gradient by finite differences, L-BFGS lowers it" ):
+    ph = phantoms.shells( 3 )
+    radio = ph.radiographs( nb_angles = 4, nb_pixels = 64 )
+    x = ph.sample( 400, seed = 1 ) + np.random.default_rng( 3 ).normal( scale = 0.03, size = ( 400, 3 ) )
+    rec = Reconstruction3d( radio ).set_points( x )
+    rec.grid_views( tol = 1e-10 )                        # ( the finite differences need converged costs )
+    for sigma, bg in ( ( 4.0, 1e-1 ), ( 0.0, 1e-3 ) ):
+        c, g = rec.grid_value_and_grad( radius = 2.5, sigma = sigma, background = bg )
+        # every view solved by the dedicated solver ( `Tuning( grid_solver = "dedicated" )` would have raised otherwise )
+        assert all( str( gt.stats.get( "grid_solver", "" ) ).startswith( "dedicated" ) for gt in rec.grid_views() ), [ gt.stats.get( "grid_solver" ) for gt in rec.grid_views() ]
+        d, eps = np.random.default_rng( 2 ).normal( size = x.shape ), 1e-6
+        fd = ( rec.grid_value_and_grad( x + eps * d, 2.5, sigma, bg )[ 0 ] - rec.grid_value_and_grad( x - eps * d, 2.5, sigma, bg )[ 0 ] ) / ( 2 * eps )
+        an = float( ( g * d ).sum() )
+        assert abs( fd - an ) < 1e-3 * abs( an ), ( sigma, fd, an )
+    c0 = rec.grid_value_and_grad( radius = 2.5, sigma = 2.0, background = 1e-2 )[ 0 ]
+    rec.grid2d( 8, radius = 2.5, sigma = 2.0, background = 1e-2 )
+    c1 = rec.grid_value_and_grad( radius = 2.5, sigma = 2.0, background = 1e-2 )[ 0 ]
+    assert c1 < 0.8 * c0, ( c0, c1 )
