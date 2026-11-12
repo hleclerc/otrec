@@ -31,11 +31,12 @@ Each directory has its own docstring ( `__init__.py` ) that says what its files 
         Recorder.py          frames of a reconstruction, with metrics
         metrics.py           image error, residual of the sinogram
         viz.py               the frames as an HTML page ( sdot.Visualizer )
-        shapes/              the shapes: deposit on bins ( 1D, sdot kernels ) or nodes ( 2D ), blur
+        shapes/              the shapes: deposit on bins ( 1D, sdot kernels: balls, ellipses ) or nodes ( 2D ), blur
         transport/           W2^2 of one view: closed form ( 1D ), sdot's grid solver ( 2D )
-        loss/                the sum over the views and its gradient: Model, Loss1d, Loss2d
+        loss/                the sum over the views and its gradient: Model, Loss1d, EllipseLoss1d, Loss2d
         packing/             ball_packing: the image of a disc ( a cylinder ) minus balls settled by gravity
-    experiments/             exp_2d.py, exp_3d.py: a packing reconstructed from a random start ( errand entries )
+    experiments/             exp_2d.py, exp_3d.py: a packing reconstructed from a random start ( errand entries );
+                             exp_2d_ellipses.py: balls, then ellipses
     bench/                   eval.py: the time of one evaluation of the 2D loss
     tests/                   errand run --no-queue --env torch 'otrec/tests/test_X.py::*'    ( from ~/Projects, one file per call )
     attic/                   everything from before ( not imported )
@@ -68,6 +69,24 @@ there is one; `Reconstruction( device = "cpu" | "cuda" )` sets it ).
 
 Units: every length given to `Reconstruction` is in WORLD units ( `radius`, `sigma` ) or relative to the shapes
 ( `move_tol`, a fraction of their radius ). Nothing is counted in pixels: the number of bins is a parameter like another.
+
+## After the balls: ellipses ( 2D )
+
+Balls give the large masses of matter, poorly its walls and its borders. `rec.to_ellipses()` is a stage after them: each
+shape becomes an ellipse with a mass of its own, from the ball it is ( `shapes/ellipses.py`: a centre, `exp( S )` with S
+symmetric for the axes, a softmax for the masses; every parameter in the unit of a length, nothing to keep in bounds ).
+The deposit and its adjoint are kernels added to `sdot/Projected1d.h` ( an ellipse projects as the same polynomial, of
+half-width `sqrt( n.C n )` ); autograd only goes from `exp( 2 S )` and the softmax back to the parameters.
+
+On 5000 shapes of radius 0.008, 720 views of 512 bins ( `experiments/exp_2d_ellipses.py`, on the card ):
+
+                                  balls        ellipses ( 780 iterations, 41 s )
+    loss above its floor          3.7e-6       2.4e-7
+    image error                   27.9 %       9.0 %
+    aspect ratio, median / q90    1 / 1        1.34 / 1.82
+
+What moves the result is the SHAPE. The masses hardly do on this object ( uniform matter: they end within 1 % of one
+another ), and they slow the stage down unless their column is scaled down ( the factor 10 of `ellipses.unpack` ).
 
 ## The number of views
 

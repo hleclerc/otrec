@@ -11,7 +11,7 @@ if p := experiment( "2d",
         n_start = Param( 1250, help = "shapes of the first stage, about" ),
         n = Param( 5000, help = "shapes at the end" ),
         division = Param( 4, help = "each shape is divided in that many between two stages" ),
-        views = Param( 360 ), bins = Param( 1024 ),
+        views = Param( 600 ), bins = Param( 1024 ),
         radius = Param( 0.003, help = "of the shapes at the end ( the object is a disc of radius 0.8 )" ),
         move_tol = Param( 0.001, help = "a stage stops when the shapes move less than that fraction of their radius in 10 iterations" ),
         record_every = Param( 20 ), seed = Param( 0 ), device = Param( "default", help = "cpu, cuda, or loom's default" ) ):

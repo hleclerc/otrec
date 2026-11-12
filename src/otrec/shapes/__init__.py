@@ -9,6 +9,7 @@ masses `1 / n`.
 
     fused           1D detector: the exact mass each bin receives, and the adjoint      -> a P0 image   ( sdot kernels )
     deposit_nodes   2D detector: the density at the corners of the pixels               -> a P1 image   ( autograd )
+    ellipses        1D detector: shapes stretched into ellipses, with masses of their own       ( autograd )
     blur            the gaussian blur of a row of samples"""
 from .blur import gaussian_matrix as gaussian_matrix
 from .deposit_nodes import deposit_nodes as deposit_nodes

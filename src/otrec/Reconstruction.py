@@ -116,6 +116,28 @@ class Reconstruction:
             print( "  ".join( f"{ k }={ v:.4g}" if isinstance( v, float ) else f"{ k }={ v }" for k, v in self.history[ -1 ].items() ), flush = True )
         return self
 
+    def to_ellipses( self, max_ratio = 4.0, move_tol = 0.01, max_iter = None ):
+        """a stage AFTER the balls ( world 2D ): each shape becomes an ELLIPSE with a mass of its own ( `shapes.ellipses` ),
+        from the ball it is; centres, axes and masses are optimized together. The result is `self.ellipses [ n, 6 ]`
+        ( measured against `self.radius`; a half-axis stays within `max_ratio` of it ), and `self.points` its centres.
+        `move_tol`: as for a stage, on the rows of `self.ellipses` -- lower than for balls: the shapes drift slowly while
+        the loss still goes down."""
+        from .loss import EllipseLoss1d
+        from .shapes import ellipses
+        t0, loss_fn = time.perf_counter(), EllipseLoss1d( self.model, max_ratio )
+        fun = lambda x: loss_fn.value_and_grad( x, 0.0, self.background )
+        x = ellipses.from_points( self.model.tensor( self.points ) )
+        loss0 = fun( x )[ 0 ]
+        x, loss, nb_iter, nb_eval, stop = lbfgs( fun, x, move_tol * self.radius,
+                                                 self.max_iter if max_iter is None else max_iter )
+        self.ellipses, self.max_ratio = x.cpu().numpy(), float( max_ratio )
+        self.points = self.ellipses[ :, :2 ].copy()
+        self.history.append( dict( sigma = 0.0, nb_points = self.nb_points, radius = self.radius, shapes = "ellipses", loss0 = loss0, loss = loss,
+                                   nb_iter = nb_iter, nb_eval = nb_eval, stop = stop, seconds = time.perf_counter() - t0 ) )
+        if self.verbose:
+            print( "  ".join( f"{ k }={ v:.4g}" if isinstance( v, float ) else f"{ k }={ v }" for k, v in self.history[ -1 ].items() ), flush = True )
+        return self
+
     def multiscale( self, n_start, n_end, division = 2, radius = None, height = None ):
         """the coarse to fine recipe in the NUMBER of shapes, from a random start ( see `random_points` ): a stage with
         about `n_start` shapes, then, until `n_end` shapes, each shape divided in `division` and a stage again.

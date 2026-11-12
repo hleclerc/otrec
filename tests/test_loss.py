@@ -51,3 +51,20 @@ if test( "3D: the gradient matches finite differences" ):
     rec = Reconstruction( sino, radius = 0.2, background = 1e-2, seed = 0 ).random_points( 6, radius = 0.6, height = 0.3 )
     an, fd = finite_difference( rec, rec.points, sino.h, eps = 1e-4, nb = 2 )
     assert np.allclose( an, fd, rtol = 5e-2, atol = 1e-6 ), ( an, fd )
+
+if test( "2D ellipses: as balls, the loss of the balls; the gradient matches finite differences; the density has the masses" ):
+    import torch
+    from otrec.loss import EllipseLoss1d
+    from otrec.shapes import ellipses
+    rec = Reconstruction( sino_of_shapes( TRUTH, 0.12 ), radius = 0.12, seed = 3 ).random_points( 6 )
+    loss_fn = EllipseLoss1d( rec.model, max_ratio = 3.0 )
+    x = ellipses.from_points( rec.model.tensor( rec.points ) )
+    assert np.isclose( loss_fn.value_and_grad( x, 0.0, 1e-3 )[ 0 ], rec.value_and_grad()[ 0 ], rtol = 1e-9 )
+    x = x + 0.03 * torch.randn( x.shape, dtype = x.dtype, device = x.device, generator = torch.Generator( device = x.device ).manual_seed( 0 ) )
+    g = loss_fn.value_and_grad( x, 0.0, 1e-3 )[ 1 ]
+    for seed in range( 3 ):
+        d = torch.randn( x.shape, dtype = x.dtype, device = x.device, generator = torch.Generator( device = x.device ).manual_seed( seed + 1 ) )
+        fd = ( loss_fn.value_and_grad( x + 1e-6 * d, 0.0, 1e-3 )[ 0 ] - loss_fn.value_and_grad( x - 1e-6 * d, 0.0, 1e-3 )[ 0 ] ) / 2e-6
+        assert np.isclose( float( ( g * d ).sum() ), fd, rtol = 1e-4, atol = 1e-8 ), ( float( ( g * d ).sum() ), fd )
+    img = ellipses.density( x, 0.12, 3.0, 64, 2.0, 2, sub = 8 )
+    assert np.isclose( img.sum(), 1.0, rtol = 2e-2 ), img.sum()
