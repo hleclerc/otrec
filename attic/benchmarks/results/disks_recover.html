@@ -1,0 +1,451 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>disks: convergence towards the centers</title>
+<style>
+  html, body { margin: 0; padding: 0; overflow: hidden; background: #ffffff; color: #111; }
+  canvas { display: block; background: #ffffff; }
+  #controls {
+    position: fixed; top: 10px; left: 10px; z-index: 1;
+    background: rgba(255,255,255,0.88); padding: 8px 12px; border-radius: 6px;
+    font-family: sans-serif; font-size: 13px; box-shadow: 0 1px 4px rgba(0,0,0,0.3);
+    width: 230px; box-sizing: border-box;
+  }
+  #controls *, #controls { box-sizing: border-box; }
+  #controls label { display: block; }
+  #controls input[type=range] { vertical-align: middle; width: 200px; }
+  #controls .hint { color: #666; margin-top: 4px; }
+  #timeControls { display: none; margin-top: 8px; padding-top: 8px; border-top: 1px solid #ddd; }
+  #timeControls .row { display: flex; align-items: center; gap: 6px; }
+  #timeControls input[type=range] { flex: 1 1 auto; width: auto; min-width: 0; }
+  #play {
+    cursor: pointer; border: none; border-radius: 4px; background: #444; color: #fff;
+    width: 26px; height: 26px; font-size: 12px; line-height: 1; flex: none;
+  }
+  #tval {
+    min-width: 46px; flex: none; text-align: right; font-variant-numeric: tabular-nums;
+  }
+  #help {
+    display: none; position: fixed; top: 10px; right: 10px; z-index: 2;
+    background: rgba(255,255,255,0.95); padding: 10px 14px; border-radius: 6px;
+    font-family: sans-serif; font-size: 12px; box-shadow: 0 1px 4px rgba(0,0,0,0.3);
+  }
+  #help table { border-collapse: collapse; }
+  #help td { padding: 1px 0; }
+  #help td:first-child { padding-right: 10px; color: #333; white-space: nowrap; }
+  #help td:last-child { color: #666; }
+  body.dark { background: #1a1a1a; color: #ddd; }
+  body.dark canvas { background: #1a1a1a; }
+  body.dark #controls { background: rgba(30,30,30,0.92); color: #ddd; }
+  body.dark #controls .hint { color: #aaa; }
+  body.dark #controls input[type=range] { accent-color: #8ab4f8; }
+  body.dark #timeControls { border-top-color: #555; }
+  body.dark #play { background: #8ab4f8; color: #172033; }
+  body.dark #help { background: rgba(30,30,30,0.95); color: #ccc; }
+  body.dark #help td:first-child { color: #ddd; }
+  body.dark #help td:last-child { color: #aaa; }
+</style>
+</head>
+<body data-theme="light">
+<div id="controls">
+  <label><span id="rname">radius</span> : <span id="rval">0.1</span>
+    <input id="r" type="range" min="0" max="1" step="0.001" value="0.5">
+  </label>
+  <div><span id="ptcount">5</span> points</div>
+  <div id="timeControls">
+    <div class="row">
+      <button id="play">&#9654;</button>
+      <input id="t" type="range" min="0" max="0" step="1" value="0">
+      <span id="tval">1 / 1</span>
+    </div>
+  </div>
+  <div class="hint">press <b>?</b> for help · <b>d</b>: <span id="modeLabel">light</span></div>
+</div>
+<div id="help">
+  <b>Keyboard shortcuts</b>
+  <table>
+    <tr><td>&larr; / &rarr;</td><td>time -1 / +1</td></tr>
+    <tr><td>Shift/Ctrl + &larr;/&rarr;</td><td>time, larger step</td></tr>
+    <tr><td>Home / End</td><td>first / last frame</td></tr>
+    <tr><td>Space</td><td>play / pause</td></tr>
+    <tr><td>&uarr; / &darr;</td><td>radius + / - (Shift/Ctrl: faster)</td></tr>
+    <tr><td>+ / -</td><td>zoom in/out (Shift/Ctrl: faster)</td></tr>
+    <tr><td>0</td><td>reset the view</td></tr>
+    <tr><td>drag</td><td>pan</td></tr>
+    <tr><td>wheel / pinch</td><td>pan / zoom</td></tr>
+    <tr><td>double-click</td><td>reset the view</td></tr>
+    <tr><td>d</td><td>toggle light / dark</td></tr>
+    <tr><td>?</td><td>show/hide this help</td></tr>
+  </table>
+</div>
+<canvas id="c"></canvas>
+<script>
+function decodeF32(b64) {
+  const raw = atob(b64);
+  const buf = new ArrayBuffer(raw.length);
+  const bytes = new Uint8Array(buf);
+  for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+  return new Float32Array(buf);
+}
+const pts = decodeF32("iiXAPrWHmD8DulM/dwpTv+h4Gb/McY8/Zvq9vxS0dj86JmQ/9QHFveM/Bj/iqS8/N+U4P9ZOhr99rty+Q5AUP+eRor9PSPk+JOtlP2Hmtb6uUEM/ZQyPPjAL4D7kc5+/4O2Xvtd1rjwQN42/6oG3PXtBgj+qYwa/LN9iP35BgT6Y/zI+ZHWfv7U6kr5xTzS+sRuLv9Hzzz3axZU/GHYBv2IzgD9jRYU+AyyKvhXkj7+3Cn++Nh8fv7p0hb8r5t8+hWW0P/cd874YGGE/jlCQPlFfeb5rw4y/VX1avsGZGL/WtGq/bWoHP0nDpT/6Gtq+Mi1ZP3p7lj5CL06+M3iPv1siZr5R1x6/uyNqv9TVFj91SqU/I1fgvlERTD8XmaI+rjgTvcKdlb/fDp++BVYavwihbr8IBR8/ahKkPx8M6768Akc/rzGnPj/jWj31xpe/2NfBvvbFGr8E/26/CM0iPw7zoz9RqOu+VtNDP6fbpT4ljAE+iguTv0CN8r6YRiy/5gVpv2V+Jj8iI6U/y8/bvhg5ST8Da5s+RqTZPU0pjb9Uj/u+dEQ0v8/dZ7/xYhw/dmGmP8n5y74m0ks/n+yZPgs61j3cnoy/H+/+vs3pM7/m92a/uhAZP7akpj8Dasu+aGRMP7DNmT6QS8w95b6Mv8Rt/77kvDO/tIxmv71FGT/9g6Y/4f7LvqfQTD9Tm5k+rtPMPbLLjL9RBQC/Kj0zv+huZr9kiBk/AmamP/mRzL5WzEw/s5KZPi/KzD0bz4y/P/j/vk4yM794XWa/SpoZPz5npj9B2My+z8tMPyKZmT7xx8w94syMvzEAAL+MMTO/R2dmvxeaGT+DZqY/pMzMvovMTD/smJk+YczMPenMjL8XAAC/AjMzv1ZmZr+jmRk/lWamPxnMzL6zzEw/NJmZPp3MzD3YzIy/AgAAvx0zM79ZZma/npkZP3hmpj91zMy+");            // all frames concatenated : [x0,y0, x1,y1, ...]
+const COUNTS = [5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5];                   // number of points per frame (may vary from one frame to the next)
+const OFFSETS = (() => {                     // offset (in points) of the start of each frame
+  let acc = 0;
+  const o = [];
+  for (const c of COUNTS) { o.push(acc); acc += c; }
+  return o;
+})();
+const nFrames = COUNTS.length;
+const FPS = 8.0;
+const bound = 3.0;                     // half-extent of the displayed world ([-bound,bound]^2)
+const RMIN = 0.005, RMAX = 2.0;      // slider bounds, log scale
+
+// Two categories of points, distinguished per point (not globally):
+//  - "point" (no size data of its own: RADII/R0 <= 0, or SCALED = false) -- a simple
+//    disk, always drawn at the SLIDER's size (absolute world units, `rPoint()`): it is
+//    a point (Dirac), not a shape, it has its own display setting.
+//  - "shape" (RADII[i] > 0 -- or R0 > 0 when RADII is uniform --, or VERT_OFFSETS) -- size
+//    set by the MODEL (exported radius/vertices), drawn AS IS: the slider does not
+//    apply (a shape has no "scale", just the size it was given).
+// SCALED = false (no `radii`/`vertex_offsets` provided): historical behavior intact, all
+// points are drawn with the requested marker (MARKER_VERTS or circle) at the slider's
+// size -- no point/shape distinction possible without radius data.
+const SCALED = true;
+const R0 = 0.4;                           // uniform world radius (SCALED, RADII == null) or 1
+const RADII = null;                     // Float32Array per point, aligned on OFFSETS, or null
+// unit vertices of the marker (e.g. a triangle -- see `export_positions_html`'s `marker`),
+// or null for the historical disk (`draw()` then draws a circle via `ctx.arc`). Used
+// only for "shape" points (see above); a "point" point is always a circle.
+const MARKER_VERTS = null;
+// EXPLICIT polygon per point (e.g. a deformed triangle, with its own orientation per point) --
+// WORLD offsets from the center, NOT unit vertices, drawn AS IS (no
+// slider): takes precedence over MARKER_VERTS/RADII when provided (see `export_positions_html`'s
+// `vertex_offsets`). All points of a `vertex_offsets` export are "shapes".
+const VERT_OFFSETS = null;
+const VOFF_K = 0;                   // vertices per polygon when VERT_OFFSETS is provided
+
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const rSlider = document.getElementById('r');
+const rLabel = document.getElementById('rval');
+const ptCountSpan = document.getElementById('ptcount');
+const timeControls = document.getElementById('timeControls');
+const tSlider = document.getElementById('t');
+const tLabel = document.getElementById('tval');
+const playBtn = document.getElementById('play');
+
+// slider at t in [0,1] -> value = RMIN * (RMAX/RMIN)^t (log scale: equal relative steps everywhere,
+// unlike a linear slider where most of the useful range gets squeezed at the bottom of the
+// range -- which caused visual "jumps" at the bottom of the range)
+function currentRadius() {
+  return RMIN * Math.pow(RMAX / RMIN, parseFloat(rSlider.value));
+}
+function updateLabel() {
+  // always an absolute WORLD radius -- the slider now only drives "point" points (the
+  // "shapes" keep the size they were sent, see the consts above), so no notion
+  // of scale/factor to display here.
+  rLabel.textContent = currentRadius().toPrecision(3);
+}
+if (SCALED) document.getElementById('rname').textContent = 'radius (points)';
+
+// interactive view: multiplicative zoom + pan in screen pixels, around (cx,cy) = canvas center
+let zoom = 1, panX = 0, panY = 0;
+const MIN_ZOOM = 0.02, MAX_ZOOM = 500;
+let baseScale = 1, cx = 0, cy = 0;           // recomputed at each draw() (depend on w,h)
+
+let frameIdx = 0;
+
+function draw() {
+  const w = canvas.width, h = canvas.height;
+  const dark = document.body.classList.contains('dark');
+  // The background is painted into the canvas bitmap (not only by CSS), which also guarantees
+  // correct rendering when capturing or exporting the canvas.
+  ctx.fillStyle = dark ? '#1a1a1a' : '#ffffff';
+  ctx.fillRect(0, 0, w, h);
+  baseScale = Math.min(w, h) / (2 * bound);
+  cx = w / 2;
+  cy = h / 2;
+  const scale = baseScale * zoom;
+  const ox = cx + panX, oy = cy + panY;
+  const mult = currentRadius();
+  const rUniform = Math.max(R0 * mult * scale, 0.4);   // screen size of points in !SCALED mode
+  const rPoint = Math.max(mult * scale, 0.4);          // screen size of "point" points in SCALED mode
+  ctx.fillStyle = dark ? '#ffffff' : '#000000';
+  const path = new Path2D();
+  const off = OFFSETS[frameIdx], cnt = COUNTS[frameIdx];
+  // true if point `i` (GLOBAL index, not relative to the frame) has no size of its own --
+  // a "point" (Dirac), to be drawn as a simple disk at the slider's size, NOT as
+  // MARKER_VERTS (reserved for "shape" points) -- see the consts above.
+  function isBarePoint(i) {
+    if (!SCALED || VERT_OFFSETS) return false;
+    const r = RADII ? RADII[i] : R0;
+    return !(r > 0);
+  }
+  if (VERT_OFFSETS) {
+    // EXPLICIT polygon per point: WORLD offsets (not unit) sent directly by
+    // the caller -- e.g. deformed triangles whose shape/orientation varies point by point,
+    // instead of a single MARKER_VERTS template rescaled by a common radius. Drawn AS
+    // IS: the slider does not apply (an explicitly sent shape has no "scale").
+    for (let i = 0; i < cnt; i++) {
+      const x = ox + pts[2 * (off + i)] * scale;
+      const y = oy - pts[2 * (off + i) + 1] * scale;
+      const base = (off + i) * VOFF_K * 2;
+      path.moveTo(x + VERT_OFFSETS[base] * scale, y - VERT_OFFSETS[base + 1] * scale);
+      for (let k = 1; k < VOFF_K; k++) {
+        const b = base + 2 * k;
+        path.lineTo(x + VERT_OFFSETS[b] * scale, y - VERT_OFFSETS[b + 1] * scale);
+      }
+      path.closePath();
+    }
+  } else {
+    for (let i = 0; i < cnt; i++) {
+      const idx = off + i;
+      const x = ox + pts[2 * idx] * scale;
+      const y = oy - pts[2 * idx + 1] * scale;
+      if (isBarePoint(idx)) {
+        // "point": no size data -- always a disk, size driven by the slider,
+        // never MARKER_VERTS (which only makes sense for a point that has a real size/shape).
+        path.moveTo(x + rPoint, y);
+        path.arc(x, y, rPoint, 0, 2 * Math.PI);
+        continue;
+      }
+      // "shape": size set by the model (RADII[idx], or R0 if uniform), drawn as
+      // is -- no slider; in !SCALED mode (no radii at all), we fall back to the
+      // historical behavior (slider size, R0 = 1).
+      const r = SCALED ? Math.max((RADII ? RADII[idx] : R0) * scale, 0.4) : rUniform;
+      if (MARKER_VERTS) {
+        path.moveTo(x + MARKER_VERTS[0][0] * r, y - MARKER_VERTS[0][1] * r);
+        for (let k = 1; k < MARKER_VERTS.length; k++)
+          path.lineTo(x + MARKER_VERTS[k][0] * r, y - MARKER_VERTS[k][1] * r);
+        path.closePath();
+      } else {
+        path.moveTo(x + r, y);
+        path.arc(x, y, r, 0, 2 * Math.PI);
+      }
+    }
+  }
+  ctx.fill(path);
+}
+
+function resize() {
+  canvas.width = window.innerWidth;
+  canvas.height = window.innerHeight;
+  draw();
+}
+
+// zooms by a factor `factor` keeping the screen point (px,py) fixed on screen
+function zoomAt(px, py, factor) {
+  const newZoom = Math.min(Math.max(zoom * factor, MIN_ZOOM), MAX_ZOOM);
+  const applied = newZoom / zoom;
+  panX = px - cx - (px - cx - panX) * applied;
+  panY = py - cy - (py - cy - panY) * applied;
+  zoom = newZoom;
+  draw();
+}
+
+function resetView() {
+  zoom = 1; panX = 0; panY = 0;
+  draw();
+}
+
+rSlider.addEventListener('input', () => { updateLabel(); draw(); });
+window.addEventListener('resize', resize);
+
+// wheel/trackpad: the browser reports a trackpad pinch as a `wheel` with
+// ctrlKey=true (and deltaY ~ the magnitude of the pinch) -- convention Ctrl+wheel = zoom on a
+// regular mouse too. Without ctrlKey, a scroll (mouse or 2-finger trackpad) = pan.
+canvas.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  if (e.ctrlKey || e.metaKey) {
+    zoomAt(e.offsetX, e.offsetY, Math.exp(-e.deltaY * 0.01));
+  } else {
+    panX -= e.deltaX;
+    panY -= e.deltaY;
+    draw();
+  }
+}, { passive: false });
+
+// mouse drag = pan
+let dragging = false, lastX = 0, lastY = 0;
+canvas.style.cursor = 'grab';
+canvas.addEventListener('mousedown', (e) => {
+  dragging = true; lastX = e.clientX; lastY = e.clientY;
+  canvas.style.cursor = 'grabbing';
+});
+window.addEventListener('mousemove', (e) => {
+  if (!dragging) return;
+  panX += e.clientX - lastX;
+  panY += e.clientY - lastY;
+  lastX = e.clientX; lastY = e.clientY;
+  draw();
+});
+window.addEventListener('mouseup', () => { dragging = false; canvas.style.cursor = 'grab'; });
+
+canvas.addEventListener('dblclick', resetView);
+
+// touch screens: 1 finger = pan, 2 fingers = pinch (zoom) + pan
+let touch = null;
+canvas.addEventListener('touchstart', (e) => {
+  e.preventDefault();
+  if (e.touches.length === 1) {
+    touch = { mode: 'pan', x: e.touches[0].clientX, y: e.touches[0].clientY };
+  } else if (e.touches.length === 2) {
+    const [t1, t2] = e.touches;
+    touch = {
+      mode: 'pinch',
+      dist: Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY),
+    };
+  }
+}, { passive: false });
+canvas.addEventListener('touchmove', (e) => {
+  e.preventDefault();
+  if (!touch) return;
+  if (touch.mode === 'pan' && e.touches.length === 1) {
+    const dx = e.touches[0].clientX - touch.x, dy = e.touches[0].clientY - touch.y;
+    panX += dx; panY += dy;
+    touch.x = e.touches[0].clientX; touch.y = e.touches[0].clientY;
+    draw();
+  } else if (touch.mode === 'pinch' && e.touches.length === 2) {
+    const [t1, t2] = e.touches;
+    const rect = canvas.getBoundingClientRect();
+    const dist = Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY);
+    const mx = (t1.clientX + t2.clientX) / 2 - rect.left;
+    const my = (t1.clientY + t2.clientY) / 2 - rect.top;
+    zoomAt(mx, my, dist / touch.dist);
+    touch.dist = dist;
+  }
+}, { passive: false });
+canvas.addEventListener('touchend', (e) => {
+  if (e.touches.length === 0) touch = null;
+  else if (e.touches.length === 1) touch = { mode: 'pan', x: e.touches[0].clientX, y: e.touches[0].clientY };
+});
+
+// time bar + play/pause (only if several frames)
+let playing = false;
+let playTimer = null;
+
+function stopPlaying() {
+  playing = false;
+  playBtn.innerHTML = '&#9654;';
+  clearInterval(playTimer);
+}
+
+function setFrame(i) {
+  frameIdx = Math.max(0, Math.min(nFrames - 1, i));
+  tSlider.value = frameIdx;
+  tLabel.textContent = `${frameIdx + 1} / ${nFrames}`;
+  ptCountSpan.textContent = COUNTS[frameIdx];
+  draw();
+}
+
+function togglePlay() {
+  if (playing) { stopPlaying(); return; }
+  playing = true;
+  playBtn.innerHTML = '&#10074;&#10074;';
+  if (frameIdx >= nFrames - 1) setFrame(0);
+  playTimer = setInterval(() => {
+    if (frameIdx >= nFrames - 1) { stopPlaying(); return; }
+    setFrame(frameIdx + 1);
+  }, 1000 / FPS);
+}
+
+if (nFrames > 1) {
+  timeControls.style.display = 'block';
+  tSlider.max = nFrames - 1;
+  tSlider.addEventListener('input', () => { stopPlaying(); setFrame(parseInt(tSlider.value, 10)); });
+  playBtn.addEventListener('click', togglePlay);
+}
+
+// keyboard shortcuts -- modifiers (Shift/Ctrl) = larger step, to navigate/adjust faster
+function pick(e, normal, big, huge) {
+  if (e.ctrlKey || e.metaKey) return huge;
+  if (e.shiftKey) return big;
+  return normal;
+}
+function timeStep(e) {
+  return pick( e, 1, Math.max( 1, Math.round( nFrames / 20 ) ), Math.max( 1, Math.round( nFrames / 5 ) ) );
+}
+function adjustRadius(delta) {
+  const t = Math.min(1, Math.max(0, parseFloat(rSlider.value) + delta));
+  rSlider.value = t;
+  updateLabel();
+  draw();
+}
+function toggleHelp() {
+  helpPanel.style.display = helpPanel.style.display === 'block' ? 'none' : 'block';
+}
+
+const helpPanel = document.getElementById('help');
+
+window.addEventListener('keydown', (e) => {
+  if (e.key === '?') { e.preventDefault(); toggleHelp(); return; }
+  if (e.key === 'Escape' && helpPanel.style.display === 'block') {
+    e.preventDefault(); helpPanel.style.display = 'none'; return;
+  }
+  switch (e.key) {
+    case 'ArrowRight':
+      if (nFrames > 1) { e.preventDefault(); stopPlaying(); setFrame(frameIdx + timeStep(e)); }
+      break;
+    case 'ArrowLeft':
+      if (nFrames > 1) { e.preventDefault(); stopPlaying(); setFrame(frameIdx - timeStep(e)); }
+      break;
+    case 'Home':
+      if (nFrames > 1) { e.preventDefault(); stopPlaying(); setFrame(0); }
+      break;
+    case 'End':
+      if (nFrames > 1) { e.preventDefault(); stopPlaying(); setFrame(nFrames - 1); }
+      break;
+    case ' ':
+      if (nFrames > 1) { e.preventDefault(); togglePlay(); }
+      break;
+    case 'ArrowUp':
+      e.preventDefault(); adjustRadius(pick(e, 0.01, 0.05, 0.2));
+      break;
+    case 'ArrowDown':
+      e.preventDefault(); adjustRadius(-pick(e, 0.01, 0.05, 0.2));
+      break;
+    case '+':
+    case '=':
+      e.preventDefault(); zoomAt(cx, cy, Math.pow(1.2, pick(e, 1, 2, 5)));
+      break;
+    case '-':
+    case '_':
+      e.preventDefault(); zoomAt(cx, cy, 1 / Math.pow(1.2, pick(e, 1, 2, 5)));
+      break;
+    case '0':
+      e.preventDefault(); resetView();
+      break;
+  }
+});
+
+// Dark mode: system preference at load, then toggled with the [d] shortcut.
+(function() {
+  const darkML = window.matchMedia('(prefers-color-scheme: dark)');
+  let curDark = darkML.matches;
+  function setTheme(on) {
+    curDark = on;
+    document.body.classList.toggle('dark', on);
+    document.body.dataset.theme = on ? 'dark' : 'light';
+    const m = document.getElementById('modeLabel');
+    if (m) m.textContent = on ? 'dark' : 'light';
+    draw();
+  }
+  setTheme(curDark);
+  darkML.addEventListener('change', e => setTheme(e.matches));
+  document.addEventListener('keydown', (kd) => {
+    if (kd.key === 'D' || kd.key === 'd') { kd.preventDefault(); setTheme(!curDark); }
+  });
+})();
+
+// last frame by default (the final/converged state, what we want to see first)
+updateLabel();
+setFrame(nFrames - 1);
+resize();
+if (nFrames > 1) {
+  // focus the time bar: the left/right arrows drive it immediately
+  tSlider.focus();
+}
+</script>
+</body>
+</html>

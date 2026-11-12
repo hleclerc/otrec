@@ -269,12 +269,16 @@ class VoronoiFoam( Phantom ):
         step = 1 << 20
         return np.concatenate( [ f( x[ i:i + step ] ) for i in range( 0, len( x ), step ) ] ) if len( x ) else np.zeros( 0 )
 
+    def solid_distance( self, x ):
+        """the signed distance to the solid, the cylinder left aside ( < 0 in it; in a void, how deep )"""
+        return self.face_distance( x ) - self.thickness / 2
+
     def density( self, x ):
         x = np.asarray( x, dtype = float )
         inside = self._cylinder_dist( x )[ :, 0 ] <= 0
         out = np.zeros( len( x ) )
         if inside.any():
-            out[ inside ] = self.face_distance( x[ inside ] ) <= self.thickness / 2
+            out[ inside ] = self.solid_distance( x[ inside ] ) <= 0
         return out
 
     def distance_to_support( self, x ):
@@ -283,7 +287,7 @@ class VoronoiFoam( Phantom ):
         out = np.maximum( dc, 0.0 )
         inside = dc <= 0
         if inside.any():
-            out[ inside ] = np.maximum( self.face_distance( x[ inside ] ) - self.thickness / 2, 0.0 )
+            out[ inside ] = np.maximum( self.solid_distance( x[ inside ] ), 0.0 )
         return out
 
     def sample( self, n, seed = 0 ):
@@ -291,7 +295,7 @@ class VoronoiFoam( Phantom ):
         out = [ ]
         while sum( len( o ) for o in out ) < n:
             x = self._in_cylinder( rng, 4 * n + 4096 )
-            out.append( x[ self.face_distance( x ) <= self.thickness / 2 ] )
+            out.append( x[ self.solid_distance( x ) <= 0 ] )
         return np.concatenate( out )[ :n ]
 
     def occupancy( self, nb, nz = None ):
@@ -312,7 +316,7 @@ class VoronoiFoam( Phantom ):
             dc = self._cylinder_dist( p )[ :, 0 ]
             near = dc < h
             sd = np.full( len( p ), np.inf )
-            sd[ near ] = np.maximum( self.face_distance( p[ near ] ) - self.thickness / 2, dc[ near ] )
+            sd[ near ] = np.maximum( self.solid_distance( p[ near ] ), dc[ near ] )
             occ = np.clip( 0.5 - sd / h, 0.0, 1.0 ).reshape( X.shape )
             vol[ k, xy[ 0 ]:xy[ -1 ] + 1, xy[ 0 ]:xy[ -1 ] + 1 ] = occ
         return vol, h
@@ -406,4 +410,54 @@ class VoronoiFoam( Phantom ):
         return r
 
 
-PHANTOMS = dict( voronoi = VoronoiFoam, foam = foam, balls = balls, hollow = hollow, touching = touching, thin = thin, shells = shells )
+class BallPacking( VoronoiFoam ):
+    """A DENSE PACKING OF EMPTY BALLS in a solid cylinder of axis `z`: the material is what is left between the balls, a
+    continuous solid with many holes. The balls sit on a hexagonal close packing ( turned and shifted at random, so that the
+    slice z = 0 cuts them at every height ) of spacing `2 ball_radius + wall`, each center jittered by `jitter` spacings;
+    each ball then grows until it is `wall` away from its nearest neighbour ( radius: half that distance, minus `wall / 2` ),
+    so the radii vary and the walls are as thin as `wall` between nearest balls. The balls that stick out of the cylinder
+    are kept ( the cylinder cuts them ).
+
+    Voxelized like `VoronoiFoam` for its projections ( `slice_projections`, `radiographs` ); `holes_in_slice` gives the
+    discs the slice z = 0 cuts in the balls."""
+
+    def __init__( self, ball_radius = 0.06, wall = 0.006, jitter = 0.03, radius = 0.8, height = 1.4, seed = 0,
+                  detector = 2.0 ):
+        from scipy.spatial import cKDTree
+        from scipy.spatial.transform import Rotation
+        rng = np.random.default_rng( seed )
+        s = 2 * ball_radius + wall
+        reach = np.hypot( radius, height / 2 ) + 2 * s
+        m = int( np.ceil( reach / ( s * np.sqrt( 2 / 3 ) ) ) ) + 1
+        i, j, k = [ a.ravel() for a in np.meshgrid( *[ np.arange( -m, m + 1 ) ] * 3, indexing = "ij" ) ]
+        c = s * np.stack( [ i + 0.5 * ( ( j + k ) % 2 ), np.sqrt( 3 ) / 2 * ( j + ( k % 2 ) / 3 ), np.sqrt( 2 / 3 ) * k ], 1 )
+        c = Rotation.random( random_state = int( rng.integers( 1 << 31 ) ) ).apply( c + rng.uniform( 0, s, 3 ) )
+        c = c + jitter * s * rng.uniform( -1, 1, c.shape )
+        r = ( cKDTree( c ).query( c, k = 2 )[ 0 ][ :, 1 ] - wall ) / 2
+        Phantom.__init__( self, np.zeros( ( 0, 3 ) ), np.zeros( 0 ), cylinders = [ [ 0, 0, 0, radius, height, 1.0 ] ],
+                          name = f"packing{ int( round( 1000 * ball_radius ) ) }", detector = detector )
+        keep = self._cylinder_dist( c )[ :, 0 ] < r
+        self.ball_centers, self.ball_radii = c[ keep ], r[ keep ]
+        self._tree = cKDTree( self.ball_centers )
+        self.cell = s
+        self.porosity = float( 1 - self.density( self._in_cylinder( rng, 200000 ) ).mean() )
+
+    def solid_distance( self, x ):
+        """> 0 in a ball, < 0 in the material. For the balls the horizontal plane of the point cuts, the distance is taken
+        IN THAT PLANE ( to the disc it cuts ): the voxels of a layer, and the slice z = 0, get sharp discs whatever the
+        height the ball is cut at"""
+        x = np.asarray( x, dtype = float )
+        d, i = self._tree.query( x, k = min( 8, len( self.ball_radii ) ), workers = -1 )
+        r, c = self.ball_radii[ i ], self.ball_centers[ i ]
+        dz = x[ :, None, 2 ] - c[ :, :, 2 ]
+        rho = np.linalg.norm( x[ :, None, :2 ] - c[ :, :, :2 ], axis = 2 )
+        return np.where( np.abs( dz ) < r, np.sqrt( np.maximum( r * r - dz * dz, 0.0 ) ) - rho, r - d ).max( 1 )
+
+    def holes_in_slice( self, z = 0.0 ):
+        """`( centers [ m, 2 ], radii [ m ] )`: the discs the plane at height `z` cuts in the balls"""
+        dz = self.ball_centers[ :, 2 ] - z
+        ok = np.abs( dz ) < self.ball_radii
+        return self.ball_centers[ ok, :2 ], np.sqrt( self.ball_radii[ ok ] ** 2 - dz[ ok ] ** 2 )
+
+
+PHANTOMS = dict( packing = BallPacking, voronoi = VoronoiFoam, foam = foam, balls = balls, hollow = hollow, touching = touching, thin = thin, shells = shells )
