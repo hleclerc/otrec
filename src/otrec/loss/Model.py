@@ -1,17 +1,20 @@
 import functools
+import math
 
 import torch
 
-from ..shapes import deposit_nodes, fused, gaussian_matrix
+from ..shapes import deposit_nodes, gaussian_matrix
 
 
 class Model:
     """What the transport compares: on the grid of the diracs ( `n_per_pixel` cells per pixel and per axis: `N` cells of
-    side `h` from `origin` ), the image of the shapes of radius `radius` and the masses of the diracs.
+    side `h` from `origin` ), the image of the shapes and the masses of the diracs. `radius`: of the balls, and what sized balls and polygons are measured against ( they stay
+    within `max_ratio` of it ); `limit`: the radius of the centred ball that every view sees whole, where the shapes are kept.
     Tensors are float64, on the device of loom ( "cpu", "cuda"; None: loom's default, the card where there is one ). `view_batch`: how many views a 2D detector deposits at once ( `[ V, n, window ]` )."""
 
-    def __init__( self, sinogram, radius, k = 2, n_per_pixel = 1, view_batch = 8, device = None ):
-        self.sinogram, self.radius, self.k = sinogram, float( radius ), int( k )
+    def __init__( self, sinogram, radius, k = 2, n_per_pixel = 1, view_batch = 8, device = None, max_ratio = 4.0 ):
+        self.sinogram, self.radius, self.k = sinogram, float( "nan" if radius is None else radius ), k if k == 0.5 else int( k )
+        self.max_ratio, self.limit = float( max_ratio ), sinogram.extent / 2
         self.n_per_pixel, self.view_batch = int( n_per_pixel ), int( view_batch )
         self.N, self.h, self.origin = self.n_per_pixel * sinogram.nb_bins, sinogram.h / self.n_per_pixel, sinogram.origin
         # one device for the tensors and the kernels: loom's ( `device`, when given, becomes its default )
@@ -22,9 +25,15 @@ class Model:
         self.axes = self.tensor( sinogram.axes )
 
     @property
-    def grid( self ):
-        """what the deposits take after the positions ( `radius` may change from a stage to the next )"""
-        return ( self.N, self.h, self.origin, self.radius, self.k )
+    def unit( self ):
+        """the mass of the ball of radius 1 and of density 1 at its centre ( the radial density is `( 1 - r^2 )^p` )"""
+        d = self.sinogram.dim
+        p = self.k - ( d - 1 ) / 2
+        return math.pi ** ( d / 2 ) * math.gamma( p + 1 ) / math.gamma( p + d / 2 + 1 )
+
+    def detector( self ):
+        """what the fused kernels take after the shapes: the axis of each view, and the grid"""
+        return ( self.axes[ :, 0 ], self.N, self.h, self.origin )
 
     def tensor( self, x ):
         return torch.as_tensor( x, dtype = torch.float64, device = self.device )
@@ -39,13 +48,11 @@ class Model:
         nb = self.N if self.sinogram.dim == 2 else self.N + 1
         return self.tensor( gaussian_matrix( nb, sigma * self.n_per_pixel ) )
 
-    def images( self, points, sigma, background, views = slice( None ) ):
-        """the images of the shapes in `views`: the mass per cell `[ V, N ]` for a 1D detector, the density at the nodes
-        `[ V, N + 1, N + 1 ]` for a 2D one; blurred by `sigma` ( pixels ) and lifted by `background` times their mean"""
-        if self.sinogram.dim == 2:
-            return self.finish( fused.deposit( points, self.axes[ views, 0 ], *self.grid ), sigma, background )
-        uv = torch.einsum( "vad,nd->vna", self.axes[ views ], points )                     # the projected centres
-        return self.finish( deposit_nodes( uv, *self.grid ), sigma, background )
+    def images( self, centres, sigma, background, views = slice( None ) ):
+        """2D detector: the density of the balls at the nodes `[ V, N + 1, N + 1 ]` in `views`, blurred by `sigma` ( pixels )
+        and lifted by `background` times its mean"""
+        uv = torch.einsum( "vad,nd->vna", self.axes[ views ], centres )                    # the projected centres
+        return self.finish( deposit_nodes( uv, self.N, self.h, self.origin, self.radius, self.k ), sigma, background )
 
     def finish( self, deposit, sigma, background ):
         """a deposit `[ V, ... ]`, blurred by `sigma` ( pixels ) and lifted by `background` times its mean"""

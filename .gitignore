@@ -14,11 +14,13 @@ build/
 *.dylib
 compile_commands.json
 
+errand-jzo.py
+
 # benchmark outputs ( html, png ): we keep the code, not its results
 benchmarks/results/
 
 # the runner ( errand )
-.errand/
+errand-outputs/
 runs/
 
 # misc
@@ -30,3 +32,5 @@ node_modules/
 docs/.vitepress/cache/
 docs/.vitepress/dist/
 .pytest_cache/
+.env
+.jz-deps/

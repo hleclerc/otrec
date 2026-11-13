@@ -26,6 +26,14 @@ def split( rng, points, division, noise, n = None ):
     return children
 
 
+def spacing( points, nb = 3 ):
+    """the mean distance from a point to its `nb` nearest neighbours. On a cloud a stage has settled in full matter,
+    `spacing^2` is the area each point stands for, within 10 % ( 2D, measured on packings; the neighbours of a point of a
+    border are along it and inside: the borders hardly count )"""
+    from scipy.spatial import cKDTree
+    return float( cKDTree( points ).query( points, min( nb, len( points ) - 1 ) + 1 )[ 0 ][ :, 1: ].mean() )
+
+
 def sizes( n_start, n_end, division ):
     """the numbers of points of the stages of a multiscale: `n_end` at the end, each one the next divided by `division`
     ( rounded up ), from the one nearest to `n_start`"""

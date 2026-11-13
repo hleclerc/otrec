@@ -45,7 +45,8 @@ def lbfgs( value_and_grad, x, move_tol, max_iter = 1000, window = 10, quantile =
             callback( x, f )
         if it % window == 0:
             moves = torch.linalg.vector_norm( x - x_ref, dim = 1 )
-            if moves.kthvalue( math.ceil( quantile * len( moves ) ) ).values.item() <= move_tol:
+            # ( not on the first window: the steps are short while the pairs are few, whatever is left to do )
+            if it > window and moves.kthvalue( math.ceil( quantile * len( moves ) ) ).values.item() <= move_tol:
                 stop = "still"
                 break
             x_ref = x

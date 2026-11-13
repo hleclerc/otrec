@@ -44,7 +44,7 @@ def export_html( rec, out_path, title = None, truth_edges = None, truth_points =
     for f, fr in enumerate( frames ):
         if f:
             viz.new_frame( fr[ "iteration" ] )
-        viz.add_points( fr[ "points" ], radius = fr[ "radius" ], color = CLOUD, opacity = 0.6 if dim == 2 else 1.0 )
+        viz.add_points( fr[ "points" ], radius = fr[ "radii" ], color = CLOUD, opacity = 0.6 if dim == 2 else 1.0 )
         if truth_points is not None:                      # ( the same arrays at each frame: stored once )
             viz.add_points( truth_points, color = TRUTH, opacity = 0.35 )
         if truth_edges is not None:
@@ -57,6 +57,6 @@ def export_html( rec, out_path, title = None, truth_edges = None, truth_points =
         viz.add_curve( name[ : -len( "( log )" ) ].strip() if log else name, [ fr[ "metrics" ][ name ] for fr in frames ], its, log_y = log )
     viz.add_curve( "blur", [ fr[ "sigma" ] for fr in frames ], its )
     viz.add_curve( "number of shapes", [ fr[ "nb_points" ] for fr in frames ], its )
-    viz.add_curve( "radius of the shapes", [ fr[ "radius" ] for fr in frames ], its )
+    viz.add_curve( "median radius of the shapes", [ float( np.median( fr[ "radii" ] ) ) for fr in frames ], its )
     viz.write_html( str( out_path ) )
     return viz

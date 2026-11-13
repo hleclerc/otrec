@@ -13,9 +13,9 @@ from otrec import Reconstruction, Sinogram, ball_packing
 
 image = ball_packing( 512 )                                           # an object: a disc full of round holes
 sino = Sinogram.from_image( image, nb_views = 360, nb_bins = 256 )    # its data ( or Sinogram( ..., values = measured ) )
-rec = Reconstruction( sino, radius = 0.008 )                          # the radius of a shape, in world units
-rec.multiscale( 25_000, 100_000, radius = 0.8 )                       # random in a disk, then stages: 25e3, 50e3, 1e5 shapes
-rec.points                                                            # [ 100_000, 2 ]
+rec = Reconstruction( sino )
+rec.multiscale( 25_000, 100_000, radius = 0.8 )                       # random in a disk, then stages: 25e3, 50e3, 1e5 balls
+rec.points, rec.radius                                                # [ 100_000, 2 ], the radius the cloud found
 ```
 
 ## Layout
@@ -25,18 +25,18 @@ Each directory has its own docstring ( `__init__.py` ) that says what its files 
     src/otrec/
         Sinogram.py          the data: geometry of the views, intensities, the diracs; `from_image`
         projection.py        the line integrals of an image ( what `from_image` runs )
-        Reconstruction.py    the cloud and the steps: random_points, split, lbfgs ( one stage ), multiscale
+        Reconstruction.py    the cloud and the steps: random_points, split, lbfgs ( one stage ), multiscale, to_polygons
         lbfgs.py             L-BFGS on tensors, on their device, stopped when the shapes no longer move
-        cloud.py             random starts, split, the sizes of a multiscale ( arrays )
+        cloud.py             random starts, split, spacing, the sizes of a multiscale ( arrays )
         Recorder.py          frames of a reconstruction, with metrics
         metrics.py           image error, residual of the sinogram
         viz.py               the frames as an HTML page ( sdot.Visualizer )
-        shapes/              the shapes: deposit on bins ( 1D, sdot kernels: balls, ellipses ) or nodes ( 2D ), blur
+        shapes/              balls, polygons ( sized: balls with a radius each, for what a cloud is ); their deposit on bins ( 1D, sdot kernels ) or nodes ( 2D ), blur
         transport/           W2^2 of one view: closed form ( 1D ), sdot's grid solver ( 2D )
-        loss/                the sum over the views and its gradient: Model, Loss1d, EllipseLoss1d, Loss2d
+        loss/                the sum over the views and its gradient: Model, Loss1d ( any of the shapes ), Loss2d
         packing/             ball_packing: the image of a disc ( a cylinder ) minus balls settled by gravity
     experiments/             exp_2d.py, exp_3d.py: a packing reconstructed from a random start ( errand entries );
-                             exp_2d_ellipses.py: balls, then ellipses
+                             exp_2d_polygons.py: balls, then polygons
     bench/                   eval.py: the time of one evaluation of the 2D loss
     tests/                   errand run --no-queue --env torch 'otrec/tests/test_X.py::*'    ( from ~/Projects, one file per call )
     attic/                   everything from before ( not imported )
@@ -51,14 +51,20 @@ there is one; `Reconstruction( device = "cpu" | "cuda" )` sets it ).
   polynomial c ( 1 - |t|^2 / R^2 )^k, in 2D and in 3D. On a 1D detector it is integrated exactly over each bin ( a P0
   image ) by the fused kernels of sdot: one pass over the shapes for all the views, in float64.
   On a 2D detector it is sampled at the corners of the pixels ( a P1 image; radius not below ~1.5 pixel ).
+* **The radius** is not a guess: it is the NOMINAL one, read on the cloud ( `Reconstruction.nominal_radius` ). The mean
+  distance `d` from a centre to its 3 nearest neighbours gives the room each ball stands for, `d^dim` ( within 10 % on
+  2D packings, whatever the radius the stage ran at, up to twice the nominal one ); the nominal radius is that of a ball
+  of that mass whose density at the centre is the density of the matter ( 0.89 d in 2D for k = 2 ). `multiscale` takes it
+  again before each stage. 3D: the same formula, not calibrated.
+* **The observable domain**. A shape must stay where every view sees it whole: its centre is pulled back so that centre
+  + reach stays in the centred ball of diameter `extent` ( `shapes.balls.inside` ).
 * **Transport** ( `transport/` ). 1D: the plan is monotone, W2^2 has a closed form that autograd differentiates
   ( float64, a few ms ). 2D: sdot's dedicated grid solver ( `nb_bins` a power of two from 32 ), warm started from the
   last solve of the view; the derivative with respect to the image is the Kantorovich potential.
-* **Recipes** ( `Reconstruction` ). A STAGE ( `lbfgs` ) is an L-BFGS on the positions, on the device, that stops when
+* **Recipes** ( `Reconstruction` ). A STAGE ( `lbfgs` ) is an L-BFGS on the centres, on the device, that stops when
   99.9 % of the shapes have moved by less than `move_tol` of their radius ( 0.1 ) over 10 iterations.
   `multiscale( n_start, n_end, division )` chains stages from a random start: about `n_start` shapes first, each one
-  divided in `division` between two stages, `n_end` at the end ( `cloud.sizes` ). The shapes are larger when they are fewer
-  ( `division^( 1 / dim )` times a stage earlier ): they hold the same room in all; `radius` is theirs at the end. For a stage that starts far from the
+  divided in `division` between two stages, `n_end` at the end ( `cloud.sizes` ). Each stage runs at the nominal radius of its cloud. For a stage that starts far from the
   object, `sigma` blurs BOTH measures; `background` lifts both by a fraction of their mean; `n_per_pixel`
   diracs per pixel and per axis.
 * **The object of the experiments and tests** ( `packing/` ). `ball_packing( nb, dim )` returns an IMAGE: a disc ( a
@@ -70,23 +76,42 @@ there is one; `Reconstruction( device = "cpu" | "cuda" )` sets it ).
 Units: every length given to `Reconstruction` is in WORLD units ( `radius`, `sigma` ) or relative to the shapes
 ( `move_tol`, a fraction of their radius ). Nothing is counted in pixels: the number of bins is a parameter like another.
 
-## After the balls: ellipses ( 2D )
+## After the balls: polygons ( 2D )
 
-Balls give the large masses of matter, poorly its walls and its borders. `rec.to_ellipses()` is a stage after them: each
-shape becomes an ellipse with a mass of its own, from the ball it is ( `shapes/ellipses.py`: a centre, `exp( S )` with S
-symmetric for the axes, a softmax for the masses; every parameter in the unit of a length, nothing to keep in bounds ).
-The deposit and its adjoint are kernels added to `sdot/Projected1d.h` ( an ellipse projects as the same polynomial, of
-half-width `sqrt( n.C n )` ); autograd only goes from `exp( 2 S )` and the softmax back to the parameters.
+Balls of one radius give the large masses of matter, poorly its walls and its borders. `rec.to_polygons( nb_vertices )`
+then makes each shape a STAR POLYGON of one density ( `shapes/polygons.py`: a centre, a size, for each vertex a distance
+and the angle to the next one -- always a polygon that turns once around its centre -- and a mass ).
+What is drawn is what is computed: an area covered twice, an area left empty.
 
-On 5000 shapes of radius 0.008, 720 views of 512 bins ( `experiments/exp_2d_ellipses.py`, on the card ):
+Each ball is taken as the disc of density 1 of the same mass, and its polygon starts as the LAGUERRE CELL of that disc
+among the others, cut by the disc: the side between two polygons is the common chord of their discs; a border nothing
+touches is an arc, cut in sides. The vertices go where the border turns, one every `2 pi / nb_vertices` of turning. The
+cell is then scaled around its centre to the area of the disc: the mass of the ball is kept.
 
-                                  balls        ellipses ( 780 iterations, 41 s )
-    loss above its floor          3.7e-6       2.4e-7
-    image error                   27.9 %       9.0 %
-    aspect ratio, median / q90    1 / 1        1.34 / 1.82
+A polygon projects as a piecewise linear function ( `deposit_polygons`, `gather_polygons` in `sdot/Projected1d.h`, which
+take the vertices themselves ): the curvature of the loss only grows in the few views along a side. The balls keep the
+smooth profile `k = 2`: with true discs ( `k = 0.5`, a root in every view ) their last stage takes twice the iterations.
 
-What moves the result is the SHAPE. The masses hardly do on this object ( uniform matter: they end within 1 % of one
-another ), and they slow the stage down unless their column is scaled down ( the factor 10 of `ellipses.unpack` ).
+On 5000 shapes, 720 views of 512 bins ( `experiments/exp_2d_polygons.py`, on the card ); the nominal radius found is
+0.0105, 1.64 times the radius of the disc of the matter per ball; polygons of 8 vertices:
+
+                              balls ( 16 s )    cells ( the start )    polygons ( 2830 it., 298 s )
+    loss above its floor      1.34e-6           1.17e-6                5.2e-8
+    image error               14.5 %            13.4 %                 3.4 %
+    area covered twice                          7.1 %                  1.0 %
+    object left empty                           5.9 %                  4.9 %
+
+The MASSES of the polygons are free, and their densities stay the same all the same: within 1 % of each other at the end
+( q10 0.99, q90 1.01 ). With ONE density for all ( masses as the areas ) the transport, which gives each view a unit
+mass, makes a polygon that grows take its mass from every other one: the same loss takes twice the iterations
+
+    iteration                 100        200        400        800        1600       the end
+    one density               8.3e-7     6.1e-7     3.5e-7     2.1e-7     1.3e-7     1.06e-7 ( 1960 it. ), image error 6.6 %
+    free masses               4.4e-7     2.8e-7     1.7e-7     1.0e-7     6.3e-8     5.5e-8 ( 2230 it. ), image error 3.5 %
+
+What was tried and left: vertices free in the plane ( from the cells: 2.4e-7, 8.9 %, one polygon in 23 no longer turning
+once around its centre; after the star polygons: nothing moves ), a stage of balls with a radius each before the polygons
+( the polygons end at the same place ), cells cut by the whole balls ( those of a border reach out of the matter: 5.5 % ).
 
 ## The number of views
 

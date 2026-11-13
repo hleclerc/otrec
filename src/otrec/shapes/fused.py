@@ -2,9 +2,10 @@
 or CUDA ): one pass over the shapes for all the views, the projections recomputed on the fly, nothing of size
 `[ views, shapes ]` ever stored. Each shape puts in every cell it covers its EXACT mass ( the primitive of its profile ).
 
-Two kinds of shapes: BALLS of one radius and equal masses ( `deposit`, `gather` ), and ELLIPSES with masses of their own
+Three kinds of shapes: BALLS of equal masses, each with its radius ( `deposit`, `gather` ), ELLIPSES with masses of their own
 ( `deposit_ellipses`, `gather_ellipses`; an ellipse is given by `C = M M^T` as `( c00, c11, c01 )`, M the matrix that maps
-the unit ball onto it: its half-width along a view of axis `n` is `sqrt( n.C n )` ).
+the unit ball onto it: its half-width along a view of axis `n` is `sqrt( n.C n )` ), and POLYGONS of density 1 given by
+their vertices ( `deposit_polygons`, `gather_polygons` ).
 
 Everything is in FLOAT64. In float32 for the shapes ( the cells still adding up in float64 ) a card is 7 times faster and
 the loss is the same to 5e-8, but its noise then stalls a stage before the shapes are still: a tolerance under a
@@ -25,12 +26,12 @@ def _call( name, code, normals, h, origin, max_width, k, param3, tensors ):
     from loom.compilation.FfiCode import FfiCode
     from sdot.projected1d import _dome_coeffs
     L = int( math.ceil( 2 * max_width / h - 1e-9 ) ) + 1                                 # the cells a shape may cover
-    c, a = _dome_coeffs( k )
+    c, a = _dome_coeffs( k ) if k != 0.5 else ( 2 / math.pi, [ 0.0 ] )           # ( 0.5: true discs, K = 0 for the kernels )
     outputs = { key: RealTensor[ tuple( Axis( ShapeVar( size ), name = f"{ key }_{ d }" ) for d, size in enumerate( ( 1, *t[ 0 ] ) ) ) + ( dict( size = 64 ), ) ]()
                 for key, t in tensors.items() if isinstance( t, tuple ) }
     inputs = { key: t[ None ] for key, t in tensors.items() if not isinstance( t, tuple ) }
     args = ", ".join( [ "queue" ] + [ f"args.{ 'outputs' if key in outputs else 'inputs' }.{ key }" for key in code[ 1 ] ] )
-    loom.ffi_call( name, FfiCode.inline( f"sdot::projected1d::{ code[ 0 ].format( k = k, L = L ) }( { args } );", includes = [ "sdot/Projected1d.h" ] ),
+    loom.ffi_call( name, FfiCode.inline( f"sdot::projected1d::{ code[ 0 ].format( k = int( k ), L = L ) }( { args } );", includes = [ "sdot/Projected1d.h" ] ),
                    normals = normals, params = torch.tensor( [ origin, h, max_width, param3, c, *a ], dtype = torch.float64, device = normals.device ),
                    has_dynamic_capacity = False, **inputs, **{ key: loom.out( t ) for key, t in outputs.items() } )
     return [ t.value[ 0 ] for t in outputs.values() ]
@@ -38,23 +39,20 @@ def _call( name, code, normals, h, origin, max_width, k, param3, tensors ):
 
 # -- balls -----------------------------------------------------------------------------------------------------------------
 
-def _radii( points, radius ):
-    return torch.full( ( len( points ), ), radius, dtype = points.dtype, device = points.device )
+def deposit( points, radii, normals, N, h, origin, max_width, k ):
+    """`[ V, N ]`: the mass each cell receives, in each view, from the balls at `points [ n, 2 ]`, of radii `radii [ n ]`
+    ( at most `max_width` ) and masses `1 / n`"""
+    return _call( "projected1d_deposit", ( "deposit<1,{k},{L}>", ( "points", "radii", "normals", "params", "hist" ) ), normals, h, origin, max_width, k, 1 / len( points ),
+                  dict( points = points, radii = radii, hist = ( ( normals.shape[ 0 ], N ), ) ) )[ 0 ]
 
 
-def deposit( points, normals, N, h, origin, radius, k ):
-    """`[ V, N ]`: the mass each cell receives, in each view, from the balls at `points [ n, 2 ]` ( masses `1 / n` )"""
-    return _call( "projected1d_deposit", ( "deposit<1,{k},{L}>", ( "points", "radii", "normals", "params", "hist" ) ), normals, h, origin, radius, k, 1 / len( points ),
-                  dict( points = points, radii = _radii( points, radius ), hist = ( ( normals.shape[ 0 ], N ), ) ) )[ 0 ]
-
-
-def gather( points, normals, N, h, origin, radius, k, d_cells ):
-    """`[ n, 2 ]`: the derivative with respect to the points of a function whose derivative with respect to the cell masses
-    is `d_cells [ V, N ]` ( the adjoint of `deposit` )"""
+def gather( points, radii, normals, N, h, origin, max_width, k, d_cells ):
+    """`( [ n, 2 ], [ n ] )`: the derivatives with respect to the points and the radii of a function whose derivative with
+    respect to the cell masses is `d_cells [ V, N ]` ( the adjoint of `deposit` )"""
     # the kernel reads the differences of `d_cells` between neighbour cells, on the N + 1 edges ( 0 on the two end ones )
     dg, n = torch.nn.functional.pad( d_cells[ :, 1: ] - d_cells[ :, :-1 ], ( 1, 1 ) ), len( points )
-    return _call( "projected1d_gather", ( "gather<1,{k},{L}>", ( "points", "radii", "normals", "params", "g", "grad_points", "grad_radii" ) ), normals, h, origin, radius, k, 1 / n,
-                  dict( points = points, radii = _radii( points, radius ), g = dg, grad_points = ( ( n, 2 ), ), grad_radii = ( ( n, ), ) ) )[ 0 ]
+    return _call( "projected1d_gather", ( "gather<1,{k},{L}>", ( "points", "radii", "normals", "params", "g", "grad_points", "grad_radii" ) ), normals, h, origin, max_width, k, 1 / n,
+                  dict( points = points, radii = radii, g = dg, grad_points = ( ( n, 2 ), ), grad_radii = ( ( n, ), ) ) )
 
 
 # -- ellipses --------------------------------------------------------------------------------------------------------------
@@ -73,3 +71,23 @@ def gather_ellipses( points, covs, masses, normals, N, h, origin, min_width, max
     return _call( "projected1d_gather_ellipses", ( "gather_ellipses<{k},{L}>", ( "points", "covs", "masses", "normals", "params", "g", "grad_points", "grad_covs", "grad_masses" ) ),
                   normals, h, origin, max_width, k, min_width,
                   dict( points = points, covs = covs, masses = masses, g = d_cells, grad_points = ( ( n, 2 ), ), grad_covs = ( ( n, 3 ), ), grad_masses = ( ( n, ), ) ) )
+
+
+# -- polygons --------------------------------------------------------------------------------------------------------------
+
+def deposit_polygons( verts, weights, normals, N, h, origin, max_width ):
+    """`[ V, N ]`: the mass each cell receives, in each view, from the polygons of vertices `verts [ n, nb_vertices, 2 ]`
+    ( counter-clockwise, simple, no wider than `2 max_width` ) and of densities `weights [ n ]`"""
+    nv = verts.shape[ 1 ]
+    return _call( "projected1d_deposit_polygons", ( f"deposit_polygons<{ nv },{{L}}>", ( "verts", "weights", "normals", "params", "hist" ) ), normals, h, origin, max_width, 0.5, 0.0,
+                  dict( verts = verts.reshape( len( verts ), -1 ), weights = weights, hist = ( ( normals.shape[ 0 ], N ), ) ) )[ 0 ]
+
+
+def gather_polygons( verts, weights, normals, N, h, origin, max_width, d_cells ):
+    """`( [ n, nb_vertices, 2 ], [ n ] )`: the derivatives with respect to the vertices and the densities of a function whose
+    derivative with respect to the cell masses is `d_cells [ V, N ]` ( the adjoint of `deposit_polygons` )"""
+    n, nv = verts.shape[ :2 ]
+    gv, gw = _call( "projected1d_gather_polygons", ( f"gather_polygons<{ nv },{{L}}>", ( "verts", "weights", "normals", "params", "g", "grad_verts", "grad_weights" ) ),
+                    normals, h, origin, max_width, 0.5, 0.0,
+                    dict( verts = verts.reshape( n, -1 ), weights = weights, g = d_cells, grad_verts = ( ( n, 2 * nv ), ), grad_weights = ( ( n, ), ) ) )
+    return gv.reshape( n, nv, 2 ), gw
