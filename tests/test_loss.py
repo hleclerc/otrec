@@ -137,3 +137,23 @@ if test( "2D star polygons: at the discs they come from, about their loss; the d
     assert np.isclose( polygons.density( *polygons.vertices( X, md ), w, 64, 2.0, sub = 8 ).sum(), 1.0, rtol = 2e-2 ) and w.std() > 0
     an, fd = finite_difference( on_arrays( rec, Loss1d( md, polygons ) ), x, eps = 1e-6 )
     assert np.allclose( an, fd, rtol = 1e-4, atol = 1e-8 ), ( an, fd )
+
+if test( "2D mesh from balls: the area of a disc full of balls, its contour on the border of the mesh, the gradient on the nodes" ):
+    from otrec.loss import Loss1d
+    import torch
+    from otrec.shapes import mesh, polygons
+    rec = Reconstruction( sino_of_shapes( TRUTH, 0.12 ), radius = 0.05 )
+    md = rec.model
+    g = 0.05 * np.stack( np.meshgrid( np.arange( -12, 13 ), np.arange( -12, 13 ), indexing = "ij" ), 2 ).reshape( -1, 2 )
+    g = g[ np.linalg.norm( g, axis = 1 ) < 0.5 ]
+    nodes, tri, loops = mesh.from_balls( md.tensor( g ), md.tensor( np.full( len( g ), 0.05 ) ), 2, 2.0, 0.025 )
+    kind = mesh.Mesh( md.tensor( tri ).long() )
+    verts, w = kind.shapes( md.tensor( nodes ), md )
+    tris = md.tensor( nodes )[ kind.triangles ]                 # the border alone projects as the triangles do
+    assert torch.allclose( kind.deposit( verts, w, md ), polygons.deposit( tris, w[ :1 ].expand( len( tris ) ), md ), atol = 1e-12 )
+    assert len( loops ) == 1 and np.isclose( 1 / w[ 0 ].item(), np.pi * 0.25, rtol = 5e-2 ) and np.isclose( kind.density( md.tensor( nodes ), 64, 2.0 ).sum(), 1.0, rtol = 1e-2 )
+    sides = { ( int( min( i, j ) ), int( max( i, j ) ) ) for i, j in mesh.border( tri ) }
+    missing = np.mean( [ ( int( min( i, j ) ), int( max( i, j ) ) ) not in sides for i, j in zip( loops[ 0 ], np.roll( loops[ 0 ], -1 ) ) ] )
+    assert missing < 0.02 and abs( len( sides ) / len( loops[ 0 ] ) - 1 ) < 0.1, ( missing, len( sides ), len( loops[ 0 ] ) )
+    an, fd = finite_difference( on_arrays( rec, Loss1d( md, kind ) ), nodes, eps = 1e-6 )
+    assert np.allclose( an, fd, rtol = 1e-2, atol = 1e-3 ), ( an, fd )         # ( loose: the loss has a kink where a side is along a view )

@@ -152,6 +152,11 @@ class Reconstruction:
         self._stage( "balls", self.loss_fn, self.model.tensor( self.points ), sigma, background, move_tol, max_iter )
         return self
 
+    def resize( self, move_tol = None, max_iter = None ):
+        """a stage of balls with a radius EACH ( world 2D, `shapes.sized` ): centres and radii together, from the current cloud"""
+        self._stage( "sized balls", Loss1d( self.model, sized ), self._sized(), 0.0, None, move_tol, max_iter )
+        return self
+
     def to_polygons( self, nb_vertices = 8, move_tol = 0.001, max_iter = None, callback = None ):
         """a stage after the balls ( world 2D ): each shape becomes a STAR POLYGON with a density of its own ( `shapes.polygons` );
         centres and vertices are optimized together. Each ball is taken as the DISC of density 1 of the same mass, and a

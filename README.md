@@ -25,18 +25,18 @@ Each directory has its own docstring ( `__init__.py` ) that says what its files 
     src/otrec/
         Sinogram.py          the data: geometry of the views, intensities, the diracs; `from_image`
         projection.py        the line integrals of an image ( what `from_image` runs )
-        Reconstruction.py    the cloud and the steps: random_points, split, lbfgs ( one stage ), multiscale, to_polygons
+        Reconstruction.py    the cloud and the steps: random_points, split, lbfgs ( one stage ), multiscale, resize, to_polygons
         lbfgs.py             L-BFGS on tensors, on their device, stopped when the shapes no longer move
         cloud.py             random starts, split, spacing, the sizes of a multiscale ( arrays )
         Recorder.py          frames of a reconstruction, with metrics
         metrics.py           image error, residual of the sinogram
         viz.py               the frames as an HTML page ( sdot.Visualizer )
-        shapes/              balls, polygons ( sized: balls with a radius each, for what a cloud is ); their deposit on bins ( 1D, sdot kernels ) or nodes ( 2D ), blur
+        shapes/              balls, sized ( a radius each ), polygons, mesh ( triangles between the contours of the balls ); their deposit on bins ( 1D, sdot kernels ) or nodes ( 2D ), blur
         transport/           W2^2 of one view: closed form ( 1D ), sdot's grid solver ( 2D )
         loss/                the sum over the views and its gradient: Model, Loss1d ( any of the shapes ), Loss2d
         packing/             ball_packing: the image of a disc ( a cylinder ) minus balls settled by gravity
     experiments/             exp_2d.py, exp_3d.py: a packing reconstructed from a random start ( errand entries );
-                             exp_2d_polygons.py: balls, then polygons
+                             exp_2d_polygons.py: balls, then polygons; exp_2d_mesh.py: balls, then a mesh of their contours
     bench/                   eval.py: the time of one evaluation of the 2D loss
     tests/                   errand run --no-queue --env torch 'otrec/tests/test_X.py::*'    ( from ~/Projects, one file per call )
     attic/                   everything from before ( not imported )
@@ -112,6 +112,24 @@ mass, makes a polygon that grows take its mass from every other one: the same lo
 What was tried and left: vertices free in the plane ( from the cells: 2.4e-7, 8.9 %, one polygon in 23 no longer turning
 once around its centre; after the star polygons: nothing moves ), a stage of balls with a radius each before the polygons
 ( the polygons end at the same place ), cells cut by the whole balls ( those of a border reach out of the matter: 5.5 % ).
+
+## After the balls: a mesh ( 2D )
+
+The balls overlap ( `k = 2` ): their density is smooth, and its level lines are CONTOURS of the matter. `shapes/mesh.py`
+takes them where the density is half the typical one, puts nodes along them and inside ( half a radius apart ), and keeps
+the Delaunay triangles in the matter; the NODES are then moved to lower the loss. Of one density, the mesh projects as
+its BORDER does: the kernels take its sides alone ( open lines, `fused.deposit_polygons( open = True )` ), and only the
+nodes of the border move. Same case ( `experiments/exp_2d_mesh.py`: 46e3 triangles, built in 0.3 s ):
+
+                              balls ( 13 s )    the mesh    nodes moved: 25 it.    100        400        670, the end ( 19 s )
+    loss above its floor      1.40e-6           4.4e-4      3.9e-6                 8.3e-7     2.0e-7     1.2e-7
+    image error               14.7 %            4.6 %       4.4 %                  3.4 %      2.4 %      1.9 %
+
+No triangle turns over ( the smallest stays over 16 % of the mean one ). Balls with a radius each before the contours
+change little: 4.2 % for the mesh after 1400 iterations of them. Open: nothing keeps the mesh sound as its border moves
+( nodes are free along the border, the inner ones do not follow ); where the Delaunay triangulation misses a side of a
+contour ( 0.04 % of them ) the border takes a long side ( 3.5 radii here ); the loss has a kink where a side is along a
+view; contours shorter than 3 sides are left out.
 
 ## The number of views
 

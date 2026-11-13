@@ -75,19 +75,21 @@ def gather_ellipses( points, covs, masses, normals, N, h, origin, min_width, max
 
 # -- polygons --------------------------------------------------------------------------------------------------------------
 
-def deposit_polygons( verts, weights, normals, N, h, origin, max_width ):
+def deposit_polygons( verts, weights, normals, N, h, origin, max_width, open = False ):
     """`[ V, N ]`: the mass each cell receives, in each view, from the polygons of vertices `verts [ n, nb_vertices, 2 ]`
-    ( counter-clockwise, simple, no wider than `2 max_width` ) and of densities `weights [ n ]`"""
+    ( counter-clockwise, simple, no wider than `2 max_width` ) and of densities `weights [ n ]`. `open`: the side from the last
+    vertex back to the first is left out -- LINES, each for the area between it and the axis of the detector through the
+    origin ( the lines of a closed border, the matter on their left, give what is inside )"""
     nv = verts.shape[ 1 ]
-    return _call( "projected1d_deposit_polygons", ( f"deposit_polygons<{ nv },{{L}}>", ( "verts", "weights", "normals", "params", "hist" ) ), normals, h, origin, max_width, 0.5, 0.0,
+    return _call( "projected1d_deposit_polygons", ( f"deposit_polygons<{ nv },{{L}},{ int( open ) }>", ( "verts", "weights", "normals", "params", "hist" ) ), normals, h, origin, max_width, 0.5, 0.0,
                   dict( verts = verts.reshape( len( verts ), -1 ), weights = weights, hist = ( ( normals.shape[ 0 ], N ), ) ) )[ 0 ]
 
 
-def gather_polygons( verts, weights, normals, N, h, origin, max_width, d_cells ):
+def gather_polygons( verts, weights, normals, N, h, origin, max_width, d_cells, open = False ):
     """`( [ n, nb_vertices, 2 ], [ n ] )`: the derivatives with respect to the vertices and the densities of a function whose
     derivative with respect to the cell masses is `d_cells [ V, N ]` ( the adjoint of `deposit_polygons` )"""
     n, nv = verts.shape[ :2 ]
-    gv, gw = _call( "projected1d_gather_polygons", ( f"gather_polygons<{ nv },{{L}}>", ( "verts", "weights", "normals", "params", "g", "grad_verts", "grad_weights" ) ),
+    gv, gw = _call( "projected1d_gather_polygons", ( f"gather_polygons<{ nv },{{L}},{ int( open ) }>", ( "verts", "weights", "normals", "params", "g", "grad_verts", "grad_weights" ) ),
                     normals, h, origin, max_width, 0.5, 0.0,
                     dict( verts = verts.reshape( n, -1 ), weights = weights, g = d_cells, grad_verts = ( ( n, 2 * nv ), ), grad_weights = ( ( n, ), ) ) )
     return gv.reshape( n, nv, 2 ), gw

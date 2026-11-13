@@ -10,6 +10,7 @@ density 1 ( a root in place of the polynomial ), and polygons are of density 1 a
     balls           one radius, equal masses: `x [ n, dim ]`                              } what a cloud is; each gives
     sized           a radius each, a mass that follows it: `x [ n, 3 ]`      ( world 2D )   } `shapes( x, model )`, what the
     polygons        star polygons, a density each: `x [ n, 5 + 2 V ]`               ( world 2D )   } kernels take
+    mesh            triangles of one density between the contours of balls: `x [ m, 2 ]`, the nodes   ( world 2D )
     fused           1D detector: the exact mass each bin receives, and the adjoint      -> a P0 image   ( sdot kernels )
     deposit_nodes   2D detector: the density at the corners of the pixels               -> a P1 image   ( autograd )
     blur            the gaussian blur of a row of samples"""
