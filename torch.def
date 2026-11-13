@@ -1,0 +1,39 @@
+# What otrec downloads, for the machines of `sif-machines.py` ( Jean Zay has no internet ): built by `errand setup`
+# ( `errand-sif.py` ), on the machine that runs it or on the builder of `sif-machines.py`, then copied where it runs.
+#
+# Not in the image: the projects ( otrec, loom, sdot-ffi ), on PYTHONPATH from the rsync copy, and what is compiled for
+# the machine ( loom's kernels, in the cache of `errand-sif.py` ).
+#
+# The pins are lmo's prj-torch ( torch 2.13 on CUDA 13.0 ) and `loom[cuda]` for nvcc ( the 13.4 frontend collapses on
+# loom's kernels ). torch pins its own CUDA runtime: the compiler goes in on its own, `--no-deps`, so that it moves
+# nothing torch depends on.
+Bootstrap: docker
+From: python:3.13-slim-trixie
+
+%post
+    set -e
+    apt-get update
+    apt-get install -y --no-install-recommends g++ make git ca-certificates curl rsync
+    rm -rf /var/lib/apt/lists/*
+
+    pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cu130 --extra-index-url https://pypi.org/simple \
+        "torch==2.13.0"
+    pip install --no-cache-dir numpy scipy matplotlib contourpy pytest typing_extensions pyyaml devtools ninja
+    pip install --no-cache-dir --no-deps "nvidia-cuda-nvcc>=13.3,<13.4" "nvidia-cuda-crt<13.4" "nvidia-nvvm<13.4" \
+        "nvidia-cuda-cccl<13.4"
+
+    # the externals loom downloads at the first compiled kernel ( `loom/compilation/externals.py` ), with the URL and
+    # SHA-256 that `sdot/__init__.py` registers: found in `LOOM_EXT_DIR`, never fetched. Without it, Newton 2D loses its
+    # Cholesky.
+    mkdir -p /opt/loom-ext/eigen-3.4.0
+    curl -sSfL -o /tmp/eigen.tar.gz https://gitlab.com/libeigen/eigen/-/archive/3.4.0/eigen-3.4.0.tar.gz
+    echo "8586084f71f9bde545ee7fa6d00288b264a2b7ac3607b974e54d13e7162c1c72  /tmp/eigen.tar.gz" | sha256sum -c -
+    tar -xzf /tmp/eigen.tar.gz -C /opt/loom-ext/eigen-3.4.0 --strip-components 1
+    rm /tmp/eigen.tar.gz
+
+%environment
+    export LOOM_EXT_DIR=/opt/loom-ext
+
+%test
+    python -c "import torch, scipy, contourpy, devtools; print( 'torch', torch.__version__, 'cuda', torch.version.cuda )"
+    ls /usr/local/lib/python3.13/site-packages/nvidia/cu13/bin/nvcc

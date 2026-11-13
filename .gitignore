@@ -34,3 +34,7 @@ docs/.vitepress/dist/
 .pytest_cache/
 .env
 .jz-deps/
+
+# the apptainer image and where each user runs it ( errand-sif.py )
+*.sif
+sif_machines.py

@@ -18,13 +18,20 @@ import math
 import torch
 
 
+def _dome_coeffs( k ):
+    """c_k and the coefficients of G( t ) - 1/2 = c_k sum_j C( k, j ) ( -1 )^j t^( 2j+1 ) / ( 2j+1 ), as `sdot.projected1d`
+    has them ( not imported: that module brings jax )"""
+    c = math.gamma( k + 1.5 ) / ( math.sqrt( math.pi ) * math.gamma( k + 1 ) )
+    return c, [ c * math.comb( k, j ) * ( -1 ) ** j / ( 2 * j + 1 ) for j in range( k + 1 ) ]
+
+
 def _call( name, code, normals, h, origin, max_width, k, param3, tensors ):
     """one kernel of `sdot::projected1d`; `tensors`: its other inputs, and its outputs as `( axes, )` to allocate.
     Returns the outputs, the batch axis the kernels work with removed"""
     import loom
+    import sdot                                                   # ( registers its headers with loom: sdot/Projected1d.h )
     from loom import Axis, RealTensor, ShapeVar
     from loom.compilation.FfiCode import FfiCode
-    from sdot.projected1d import _dome_coeffs
     L = int( math.ceil( 2 * max_width / h - 1e-9 ) ) + 1                                 # the cells a shape may cover
     c, a = _dome_coeffs( k ) if k != 0.5 else ( 2 / math.pi, [ 0.0 ] )           # ( 0.5: true discs, K = 0 for the kernels )
     outputs = { key: RealTensor[ tuple( Axis( ShapeVar( size ), name = f"{ key }_{ d }" ) for d, size in enumerate( ( 1, *t[ 0 ] ) ) ) + ( dict( size = 64 ), ) ]()
