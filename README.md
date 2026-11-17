@@ -9,13 +9,17 @@ and discretized on an image; the positions of the shapes minimize
     L( points ) = sum_views  W2^2(  diracs of the view ,  image of the projected shapes  )
 
 ```python
-from otrec import Reconstruction, Sinogram, ball_packing
+from otrec import Reconstruction, Recorder, Sinogram, ball_packing
 
 image = ball_packing( 512 )                                           # an object: a disc full of round holes
 sino = Sinogram.from_image( image, nb_views = 360, nb_bins = 256 )    # its data ( or Sinogram( ..., values = measured ) )
-rec = Reconstruction( sino )
-rec.multiscale( 25_000, 100_000, radius = 0.8 )                       # random in a disk, then stages: 25e3, 50e3, 1e5 balls
-rec.points, rec.radius                                                # [ 100_000, 2 ], the radius the cloud found
+rec = Reconstruction( sino, recorder = Recorder( verbose = True ) )   # the problem, and what keeps the history
+rec.add_random_balls( 25_000, radius = 0.006 )                        # how to solve it: the steps. A random start,
+rec.adjust_parameters( centers = True, x_tol = 0.1 )                  # a stage ( the centres, until they no longer move ),
+rec.split_items( division = 2, noise_ratio = 1.0 )                    # each ball in two ( the radius / sqrt( 2 ) ),
+rec.adjust_parameters( centers = True, x_tol = 0.1 )
+rec.adjust_parameters( centers = True, cov_matrices = True, x_tol = 0.01 )  # then ellipses: a covariance each ( 2D )
+rec.points, rec.ellipses, rec.recorder.steps                          # [ 50_000, 2 ], [ 50_000, 5 ], every step and its numbers
 ```
 
 ## Layout
@@ -25,17 +29,18 @@ Each directory has its own docstring ( `__init__.py` ) that says what its files 
     src/otrec/
         Sinogram.py          the data: geometry of the views, intensities, the diracs; `from_image`
         projection.py        the line integrals of an image ( what `from_image` runs )
-        Reconstruction.py    the cloud and the steps: random_points, split, lbfgs ( one stage ), multiscale, resize, to_polygons
+        Reconstruction.py    the problem, and the steps: add_random_balls, split_items, adjust_parameters ( one stage ), fit_polygons; multiscale ( a recipe )
         lbfgs.py             L-BFGS on tensors, on their device, stopped when the shapes no longer move
         cloud.py             random starts, split, spacing, the sizes of a multiscale ( arrays )
-        Recorder.py          frames of a reconstruction, with metrics
+        Recorder.py          the history: every step and its parameters, the losses; frames with metrics, and the HTML page ( write_html )
         metrics.py           image error, residual of the sinogram
-        viz.py               the frames as an HTML page ( sdot.Visualizer )
-        shapes/              balls, sized ( a radius each ), polygons, mesh ( triangles between the contours of the balls ); their deposit on bins ( 1D, sdot kernels ) or nodes ( 2D ), blur
+        viz.py               the outline of the object ( contours ), the colours of a page
+        shapes/              balls, sized ( a radius each ), ellipses ( a covariance each ), polygons, mesh ( triangles between the contours of the balls ); their deposit on bins ( 1D, sdot kernels ) or nodes ( 2D ), blur
         transport/           W2^2 of one view: closed form ( 1D ), sdot's grid solver ( 2D )
         loss/                the sum over the views and its gradient: Model, Loss1d ( any of the shapes ), Loss2d
         packing/             ball_packing: the image of a disc ( a cylinder ) minus balls settled by gravity
     experiments/             exp_2d.py, exp_3d.py: a packing reconstructed from a random start ( errand entries );
+                             exp_2d.py::ellipses: balls, then ellipses ( centre + covariance ), the steps written out;
                              exp_2d_polygons.py: balls, then polygons; exp_2d_mesh.py: balls, then a mesh of their contours
     bench/                   eval.py: the time of one evaluation of the 2D loss
     tests/                   errand run --no-queue --env torch 'otrec/tests/test_X.py::*'    ( from ~/Projects, one file per call )
@@ -55,14 +60,15 @@ there is one; `Reconstruction( device = "cpu" | "cuda" )` sets it ).
   distance `d` from a centre to its 3 nearest neighbours gives the room each ball stands for, `d^dim` ( within 10 % on
   2D packings, whatever the radius the stage ran at, up to twice the nominal one ); the nominal radius is that of a ball
   of that mass whose density at the centre is the density of the matter ( 0.89 d in 2D for k = 2 ). `multiscale` takes it
-  again before each stage. 3D: the same formula, not calibrated.
+  again before each stage ( `add_random_balls` takes the radius it is given, `split_items` divides it ). 3D: the same formula, not calibrated.
 * **The observable domain**. A shape must stay where every view sees it whole: its centre is pulled back so that centre
   + reach stays in the centred ball of diameter `extent` ( `shapes.balls.inside` ).
 * **Transport** ( `transport/` ). 1D: the plan is monotone, W2^2 has a closed form that autograd differentiates
   ( float64, a few ms ). 2D: sdot's dedicated grid solver ( `nb_bins` a power of two from 32 ), warm started from the
   last solve of the view; the derivative with respect to the image is the Kantorovich potential.
-* **Recipes** ( `Reconstruction` ). A STAGE ( `lbfgs` ) is an L-BFGS on the centres, on the device, that stops when
-  99.9 % of the shapes have moved by less than `move_tol` of their radius ( 0.1 ) over 10 iterations.
+* **Recipes** ( `Reconstruction` ). The constructor takes the problem, the steps say how to solve it. A STAGE
+  ( `adjust_parameters`: the centres, the radii, the covariances, as asked ) is an L-BFGS, on the device, that stops when 99.9 % of the shapes
+  have moved by less than `x_tol` of their radius over 10 iterations ( or after `max_iter` ).
   `multiscale( n_start, n_end, division )` chains stages from a random start: about `n_start` shapes first, each one
   divided in `division` between two stages, `n_end` at the end ( `cloud.sizes` ). Each stage runs at the nominal radius of its cloud. For a stage that starts far from the
   object, `sigma` blurs BOTH measures; `background` lifts both by a fraction of their mean; `n_per_pixel`
@@ -74,11 +80,11 @@ there is one; `Reconstruction( device = "cpu" | "cuda" )` sets it ).
   any image.
 
 Units: every length given to `Reconstruction` is in WORLD units ( `radius`, `sigma` ) or relative to the shapes
-( `move_tol`, a fraction of their radius ). Nothing is counted in pixels: the number of bins is a parameter like another.
+( `x_tol`, a fraction of their radius ). Nothing is counted in pixels: the number of bins is a parameter like another.
 
 ## After the balls: polygons ( 2D )
 
-Balls of one radius give the large masses of matter, poorly its walls and its borders. `rec.to_polygons( nb_vertices )`
+Balls of one radius give the large masses of matter, poorly its walls and its borders. `rec.fit_polygons( nb_vertices )`
 then makes each shape a STAR POLYGON of one density ( `shapes/polygons.py`: a centre, a size, for each vertex a distance
 and the angle to the next one -- always a polygon that turns once around its centre -- and a mass ).
 What is drawn is what is computed: an area covered twice, an area left empty.
@@ -147,7 +153,7 @@ From `~/Projects`, with errand ( `-o` brings the page back under `runs/otrec/exp
     errand run --env lmo-torch -o 'otrec/experiments/exp_2d.py::*' --n_start=250000 --n=1000000 --bins=1024 --views=1440
 
 The object is `ball_packing`, the start is random. Every size is a declared parameter ( `errand list`, or the top of each
-file ). Each run writes one HTML page: the cloud frame by frame ( every shape, at its true radius ) over the outline of
+file ). Each run writes one HTML page: the cloud frame by frame ( every shape as it is: balls at their radius, ellipses, polygons ) over the outline of
 the object, and the curves ( loss, image error, blur, number of shapes ); a click in a curve goes to that iteration. The
 final numbers go to the results of the run.
 
@@ -168,7 +174,7 @@ What it rests on:
   Written with tensor operations, an evaluation at 1e5 shapes took 2.4 s on the Mac ( every operation sweeps an array
   `[ views, shapes, window ]`, and autograd keeps them all );
 * float64 throughout, for now. Float32 for the shapes ( the bins still in float64 ) is 7 times faster on the card and
-  gives the same loss to 5e-8, but its noise stalls a stage before the shapes are still: under `move_tol = 0.01` the
+  gives the same loss to 5e-8, but its noise stalls a stage before the shapes are still: under `x_tol = 0.01` the
   tolerance is never reached, and where a stage stalls changes from a run to the next on the card. To use again only
   where it is needed. ( With float32 shapes the card took 0.011 s and 0.046 s; the times of the
   whole experiments below were measured that way too. )

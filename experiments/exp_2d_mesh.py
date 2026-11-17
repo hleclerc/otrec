@@ -25,7 +25,7 @@ if p := experiment( "mesh",
     import numpy as np
     import torch
 
-    from otrec import Reconstruction, Sinogram, ball_packing, viz
+    from otrec import Reconstruction, Recorder, Sinogram, ball_packing, viz
     from otrec.lbfgs import lbfgs
     from otrec.loss import Loss1d
     from otrec.shapes import mesh, polygons, sized
@@ -34,7 +34,7 @@ if p := experiment( "mesh",
     image = ball_packing( nb = 2 * p.bins, seed = p.seed )
     sino = Sinogram.from_image( image, p.views, p.bins )
     truth = image.reshape( p.bins, 2, p.bins, 2 ).mean( ( 1, 3 ) )
-    rec = Reconstruction( sino, k = p.k, move_tol = p.move_tol, max_iter = p.max_iter, seed = p.seed, max_ratio = p.max_ratio, verbose = True )
+    rec = Reconstruction( sino, k = p.k, max_ratio = p.max_ratio, recorder = Recorder( verbose = True ) )
     md = rec.model
     page = Visualizer( title = f"otrec 2D -- { p.n } balls, their contours, a mesh", frame_axis = "iteration of the nodes", frame_value = 0, flat_points = True )
     edges = viz.contours( image, sino.extent )
@@ -74,13 +74,13 @@ if p := experiment( "mesh",
         measure( f"{ name }_mesh", kind, x )
         return kind, x
 
-    rec.multiscale( p.n_start, p.n, p.division, radius = 0.8 )
+    rec.multiscale( p.n_start, p.n, p.division, x_tol = p.move_tol, max_iter = p.max_iter )
     p.results[ "radius" ] = rec.radius
     kind, x = report( "balls" )
     done = 0
     for nb in [ int( i ) for i in str( p.sized ).split( "," ) if i ]:
-        rec.resize( p.sized_move_tol, nb )
-        done += rec.history[ -1 ][ "nb_iter" ]
+        rec.adjust_parameters( centers = True, radii = True, x_tol = p.sized_move_tol, max_iter = nb )
+        done += rec.recorder.stages[ -1 ][ "nb_iter" ]
         kind, x = report( f"sized_{ done }" )
     frame( 0, kind, x )
 

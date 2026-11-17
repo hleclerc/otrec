@@ -1,4 +1,4 @@
-"""Balls at the radius the cloud finds, then POLYGONS ( `to_polygons`, from the Laguerre cells of the
+"""Balls at the radius the cloud finds, then POLYGONS ( `fit_polygons`, from the Laguerre cells of the
 balls; a density each, that stays close to the others ): what the walls and the borders of a packing gain. Few shapes on purpose, each of a few pixels: the shape of a
 shape must matter.
 
@@ -25,7 +25,7 @@ if p := experiment( "polygons",
     import numpy as np
     import torch
 
-    from otrec import Reconstruction, Sinogram, ball_packing, viz
+    from otrec import Reconstruction, Recorder, Sinogram, ball_packing, viz
     from otrec.loss import Loss1d
     from otrec.shapes import polygons, sized
     from sdot.viz.Visualizer import Visualizer
@@ -33,7 +33,7 @@ if p := experiment( "polygons",
     image = ball_packing( nb = 2 * p.bins, seed = p.seed )
     sino = Sinogram.from_image( image, p.views, p.bins )
     truth = image.reshape( p.bins, 2, p.bins, 2 ).mean( ( 1, 3 ) )
-    rec = Reconstruction( sino, k = p.k, move_tol = p.move_tol, max_iter = p.max_iter, seed = p.seed, max_ratio = p.max_ratio, verbose = True )
+    rec = Reconstruction( sino, k = p.k, max_ratio = p.max_ratio, recorder = Recorder( verbose = True ) )
     md = rec.model
     page = Visualizer( title = f"otrec 2D -- { p.n } balls, then polygons", frame_axis = "iteration of the polygons", frame_value = -1, flat_points = True )
     edges = viz.contours( image, sino.extent )
@@ -63,7 +63,7 @@ if p := experiment( "polygons",
                             f"{ name }_gap_over_180": float( ( gaps.max( 1 ).values > math.pi ).double().mean().item() ) } )
         image_error( name, img )
 
-    rec.multiscale( p.n_start, p.n, p.division, radius = 0.8 )
+    rec.multiscale( p.n_start, p.n, p.division, x_tol = p.move_tol, max_iter = p.max_iter )
     p.results[ "radius" ] = rec.radius
     p.results[ "radius_over_disc_of_the_matter" ] = rec.radius / float( np.sqrt( image.mean() * sino.extent ** 2 / p.n / np.pi ) )
     p.results[ "balls_loss_above_floor" ] = rec.loss - rec.loss_fn.floor
@@ -72,7 +72,7 @@ if p := experiment( "polygons",
     page.add_edges( *edges, color = viz.TRUTH )
 
     r = md.tensor( rec.radii ) * math.sqrt( md.unit / math.pi )
-    start = polygons.from_discs( md.tensor( rec.points ), r, rec.radius, p.vertices, math.pi * r * r )                # ( as `to_polygons` )
+    start = polygons.from_discs( md.tensor( rec.points ), r, rec.radius, p.vertices, math.pi * r * r )                # ( as `fit_polygons` )
     p.results[ "cells_loss_above_floor" ] = Loss1d( md, polygons ).value_and_grad( start, 0.0, rec.background )[ 0 ] - rec.loss_fn.floor
     report( "cells", start )
     frame( start, 0 )
@@ -85,7 +85,7 @@ if p := experiment( "polygons",
             c, v = polygons.vertices( x, md )                          # how fast: the loss and the image along the iterations
             p.results[ f"at_{ count[ 0 ] }_loss_above_floor" ] = loss - rec.loss_fn.floor
             image_error( f"at_{ count[ 0 ] }", polygons.density( c, v, polygons.shapes( x, md )[ 1 ], p.bins, sino.extent ) )
-    rec.to_polygons( p.vertices, p.polygon_move_tol, callback = each )
+    rec.fit_polygons( p.vertices, p.polygon_move_tol, p.max_iter, callback = each )
     p.results[ "polygons_loss_above_floor" ] = rec.loss - rec.loss_fn.floor
     report( "polygons", md.tensor( rec.polygons ) )
     if count[ 0 ] not in shown:

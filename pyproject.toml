@@ -18,3 +18,23 @@ packages = ["src/otrec"]
 
 [tool.hatch.build.targets.sdist]
 only-include = ["src"]
+
+[tool.basedpyright]
+include = ["src", "tests", "experiments", "bench"]
+exclude = ["**/__pycache__", "attic", "runs", "errand-outputs"]
+extraPaths = ["src"]
+venvPath = "/Users/hugo.leclerc/.mamba/envs"
+venv = "prj-torch"
+pythonPlatform = "Darwin"
+typeCheckingMode = "basic"
+reportMissingTypeStubs = false
+reportUnknownMemberType = false
+reportUnknownVariableType = false
+reportUnknownArgumentType = false
+reportUnknownParameterType = false
+reportAny = false
+reportUnusedCallResult = false
+reportImplicitOverride = false
+
+[tool.ruff.lint]
+ignore = ["I001"]

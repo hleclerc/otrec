@@ -6,9 +6,9 @@ from .sif_machine import Machine
 MACHINES = {}
 
 # a simple workstation
-MACHINES[ "ws"] = Machine( 
-    run_host = "my-workstation", 
-    work_dir = "/home/LOGIN/otrec-sif" 
+MACHINES[ "ws"] = Machine(
+    run_host = "my-workstation",
+    work_dir = "/home/LOGIN/otrec-sif"
 )
 
 # Jean Zay: no internet, so built on the workstation; only the images copied by `idrcontmgr` run there
@@ -18,13 +18,16 @@ for arch, cpus in [ ( "h100", 24 ), ( "a100", 8 ) ]:
         work_dir                = "/lustre/fswork/projects/rech/PROJECT/LOGIN/otrec-sif",   # in $WORK: $HOME is 3 GB
         layers_before_image     = [
             errand.Module( "singularity" ),
-            errand.Slurm( 
-                account = f"PROJECT@{ arch }", 
-                qos = f"qos_gpu_{ arch }-dev", 
+            errand.Slurm(
+                account = f"PROJECT@{ arch }",
+                qos = f"qos_gpu_{ arch }-dev",
                 extra = [ "-C", arch, "--hint=nomultithread" ],
-                gpus = 1, cpus = cpus, time = "00:20:00", watch = 300 
+                gpus = 1, cpus = cpus, time = "00:20:00", watch = 300
             ),
+            #     errand.Slurm( nodes = 2, ntasks_per_node = 2, gpus = 1, cpus = 10, time = "00:10:00", watch = 60,
+            #                   account = "vst@v100", qos = "qos_gpu-dev", extra = [ "-C", "v100-16g", "--hint=nomultithread" ] ),
         ],
+
         image_build_host        = "my-workstation",
         image_build_dir         = "/home/LOGIN/otrec-sif-build",
         apptainer_exe           = "singularity",

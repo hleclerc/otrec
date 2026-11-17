@@ -25,6 +25,18 @@ def _dome_coeffs( k ):
     return c, [ c * math.comb( k, j ) * ( -1 ) ** j / ( 2 * j + 1 ) for j in range( k + 1 ) ]
 
 
+def window_cells( max_width, h ):
+    """POLYGONS: the cells one may cover, `ceil( 2 max_width / h ) + 1`, ROUNDED UP to 4 steps per octave ( ..., 8, 10,
+    12, 14, 16, 20, 24, ...: at most 1.25 times more ): a static size of their kernels, and a radius that changes with
+    the number of shapes would otherwise compile them again at each new value. The cells past the support receive
+    nothing. ( Balls and ellipses take a window of runtime size: one kernel for every width. )"""
+    L = int( math.ceil( 2 * max_width / h - 1e-9 ) ) + 1
+    if L <= 5:
+        return L
+    q = ( 1 << ( ( L - 1 ).bit_length() - 1 ) ) // 4                                  # a quarter of the power of two under L
+    return -( -L // q ) * q
+
+
 def _call( name, code, normals, h, origin, max_width, k, param3, tensors ):
     """one kernel of `sdot::projected1d`; `tensors`: its other inputs, and its outputs as `( axes, )` to allocate.
     Returns the outputs, the batch axis the kernels work with removed"""
@@ -32,7 +44,7 @@ def _call( name, code, normals, h, origin, max_width, k, param3, tensors ):
     import sdot                                                   # ( registers its headers with loom: sdot/Projected1d.h )
     from loom import Axis, RealTensor, ShapeVar
     from loom.compilation.FfiCode import FfiCode
-    L = int( math.ceil( 2 * max_width / h - 1e-9 ) ) + 1                                 # the cells a shape may cover
+    L = window_cells( max_width, h )                                                  # ( polygons only: `{L}` in their code )
     c, a = _dome_coeffs( k ) if k != 0.5 else ( 2 / math.pi, [ 0.0 ] )           # ( 0.5: true discs, K = 0 for the kernels )
     outputs = { key: RealTensor[ tuple( Axis( ShapeVar( size ), name = f"{ key }_{ d }" ) for d, size in enumerate( ( 1, *t[ 0 ] ) ) ) + ( dict( size = 64 ), ) ]()
                 for key, t in tensors.items() if isinstance( t, tuple ) }
@@ -49,7 +61,7 @@ def _call( name, code, normals, h, origin, max_width, k, param3, tensors ):
 def deposit( points, radii, normals, N, h, origin, max_width, k ):
     """`[ V, N ]`: the mass each cell receives, in each view, from the balls at `points [ n, 2 ]`, of radii `radii [ n ]`
     ( at most `max_width` ) and masses `1 / n`"""
-    return _call( "projected1d_deposit", ( "deposit<1,{k},{L}>", ( "points", "radii", "normals", "params", "hist" ) ), normals, h, origin, max_width, k, 1 / len( points ),
+    return _call( "projected1d_deposit", ( "deposit<1,{k}>", ( "points", "radii", "normals", "params", "hist" ) ), normals, h, origin, max_width, k, 1 / len( points ),
                   dict( points = points, radii = radii, hist = ( ( normals.shape[ 0 ], N ), ) ) )[ 0 ]
 
 
@@ -58,7 +70,7 @@ def gather( points, radii, normals, N, h, origin, max_width, k, d_cells ):
     respect to the cell masses is `d_cells [ V, N ]` ( the adjoint of `deposit` )"""
     # the kernel reads the differences of `d_cells` between neighbour cells, on the N + 1 edges ( 0 on the two end ones )
     dg, n = torch.nn.functional.pad( d_cells[ :, 1: ] - d_cells[ :, :-1 ], ( 1, 1 ) ), len( points )
-    return _call( "projected1d_gather", ( "gather<1,{k},{L}>", ( "points", "radii", "normals", "params", "g", "grad_points", "grad_radii" ) ), normals, h, origin, max_width, k, 1 / n,
+    return _call( "projected1d_gather", ( "gather<1,{k}>", ( "points", "radii", "normals", "params", "g", "grad_points", "grad_radii" ) ), normals, h, origin, max_width, k, 1 / n,
                   dict( points = points, radii = radii, g = dg, grad_points = ( ( n, 2 ), ), grad_radii = ( ( n, ), ) ) )
 
 
@@ -67,7 +79,7 @@ def gather( points, radii, normals, N, h, origin, max_width, k, d_cells ):
 def deposit_ellipses( points, covs, masses, normals, N, h, origin, min_width, max_width, k ):
     """`[ V, N ]`: the mass each cell receives, in each view, from the ellipses at `points [ n, 2 ]`, of matrices
     `covs [ n, 3 ]` and masses `masses [ n ]`; their half-widths are kept in `[ min_width, max_width ]`"""
-    return _call( "projected1d_deposit_ellipses", ( "deposit_ellipses<{k},{L}>", ( "points", "covs", "masses", "normals", "params", "hist" ) ), normals, h, origin, max_width, k, min_width,
+    return _call( "projected1d_deposit_ellipses", ( "deposit_ellipses<{k}>", ( "points", "covs", "masses", "normals", "params", "hist" ) ), normals, h, origin, max_width, k, min_width,
                   dict( points = points, covs = covs, masses = masses, hist = ( ( normals.shape[ 0 ], N ), ) ) )[ 0 ]
 
 
@@ -75,7 +87,7 @@ def gather_ellipses( points, covs, masses, normals, N, h, origin, min_width, max
     """`( [ n, 2 ], [ n, 3 ], [ n ] )`: the derivatives with respect to the points, the matrices and the masses of a function
     whose derivative with respect to the cell masses is `d_cells [ V, N ]` ( the adjoint of `deposit_ellipses` )"""
     n = len( points )
-    return _call( "projected1d_gather_ellipses", ( "gather_ellipses<{k},{L}>", ( "points", "covs", "masses", "normals", "params", "g", "grad_points", "grad_covs", "grad_masses" ) ),
+    return _call( "projected1d_gather_ellipses", ( "gather_ellipses<{k}>", ( "points", "covs", "masses", "normals", "params", "g", "grad_points", "grad_covs", "grad_masses" ) ),
                   normals, h, origin, max_width, k, min_width,
                   dict( points = points, covs = covs, masses = masses, g = d_cells, grad_points = ( ( n, 2 ), ), grad_covs = ( ( n, 3 ), ), grad_masses = ( ( n, ), ) ) )
 

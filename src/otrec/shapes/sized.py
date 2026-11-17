@@ -5,7 +5,7 @@ optimized as it stands ( no constraint, every column a length ):
     x[ :, :2 ]    the centre
     x[ :, 2 ]     SCALE r0 log( radius / r0 ): 0 is the radius `r0`
 
-The radii are kept in `[ r0 / max_ratio, r0 max_ratio ]` ( the cells a shape may reach are a static size ) and the balls
+The radii are kept in `[ r0 / max_ratio, r0 max_ratio ]` ( what one shape may cover: its cost ) and the balls
 inside the observable domain. The kernels are those of ellipses with a mass each ( `fused` ): a ball is a round one."""
 import math
 

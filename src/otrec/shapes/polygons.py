@@ -173,3 +173,9 @@ def turns( centres, verts ):
         a, b = verts - torch.roll( verts, 1, 1 ), torch.roll( verts, -1, 1 ) - verts
         cross = a[ :, :, 0 ] * b[ :, :, 1 ] - a[ :, :, 1 ] * b[ :, :, 0 ]
         return gaps, cross < -1e-9 * torch.linalg.vector_norm( a, dim = 2 ) * torch.linalg.vector_norm( b, dim = 2 )
+
+
+def drawing( x, model ):
+    """what a frame of a page keeps: `{ "faces": ( positions, triangles ) }` of the rows `x` ( tensors )"""
+    with torch.no_grad():
+        return dict( faces = outlines( *vertices( x, model ) )[ :2 ] )

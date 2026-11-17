@@ -50,13 +50,13 @@ if test( "2D: one shape moved by d pays ( d . axis )^2 more in every view" ):
 
 if test( "2D: the gradient matches finite differences" ):
     for n, sigma in ( ( 1, 0.0 ), ( 2, 0.05 ) ):
-        rec = Reconstruction( sino_of_shapes( TRUTH, 0.12 ), radius = 0.12, n_per_pixel = n, seed = 3 ).random_points( 6 )
+        rec = Reconstruction( sino_of_shapes( TRUTH, 0.12 ), n_per_pixel = n ).add_random_balls( 6, 0.12 )
         an, fd = finite_difference( lambda p: rec.value_and_grad( p, sigma ), rec.points, eps = 1e-6 )
         assert np.allclose( an, fd, rtol = 1e-4, atol = 1e-8 ), ( an, fd )
 
 if test( "3D: the gradient matches finite differences" ):
     sino = Sinogram.from_image( ball_packing( 64, dim = 3, ball_radii = ( 0.15, 0.25 ) ), nb_views = 2, nb_bins = 32 )
-    rec = Reconstruction( sino, radius = 0.2, background = 1e-2, seed = 0 ).random_points( 6, radius = 0.6, height = 0.3 )
+    rec = Reconstruction( sino, background = 1e-2 ).add_random_balls( 6, 0.2 )
     an, fd = finite_difference( lambda p: rec.value_and_grad( p, sino.h ), rec.points, eps = 1e-4, nb = 2 )
     assert np.allclose( an, fd, rtol = 5e-2, atol = 1e-6 ), ( an, fd )
 
@@ -71,7 +71,7 @@ if test( "a shape that would leave what the views see is pulled back inside" ):
 if test( "2D sized balls: equal, the loss of the balls; the gradient matches finite differences" ):
     from otrec.loss import Loss1d
     from otrec.shapes import sized
-    rec = Reconstruction( sino_of_shapes( TRUTH, 0.12 ), radius = 0.12, seed = 3, max_ratio = 3.0 ).random_points( 6 )
+    rec = Reconstruction( sino_of_shapes( TRUTH, 0.12 ), max_ratio = 3.0 ).add_random_balls( 6, 0.12 )
     fun = on_arrays( rec, Loss1d( rec.model, sized ) )
     x = rec._sized().cpu().numpy()
     assert np.isclose( fun( x )[ 0 ], rec.value_and_grad()[ 0 ], rtol = 1e-9 )
@@ -94,7 +94,8 @@ if test( "2D true discs ( k = 0.5 ): the loss of the truth, the gradients match 
     rec = Reconstruction( sino_of_shapes( TRUTH, 0.12, k = 0.5 ), TRUTH, radius = 0.12, k = 0.5, max_ratio = 3.0 )
     f, floor = rec.value_and_grad()[ 0 ], rec.sinogram.nb_views * rec.sinogram.h ** 2 / 12
     assert f < 1.05 * floor, ( f, floor )
-    rec.random_points( 6 )
+    rec.points = None                                                       # ( a new cloud: 6 random balls )
+    rec.add_random_balls( 6, 0.12 )
     rng = np.random.default_rng( 0 )
     for kind, x in ( ( balls, rec.model.tensor( rec.points ) ), ( sized, rec._sized() ) ):
         fun = on_arrays( rec, Loss1d( rec.model, kind ) )
@@ -129,7 +130,8 @@ if test( "2D star polygons: at the discs they come from, about their loss; the d
     md, f = rec.model, rec.value_and_grad()[ 0 ]
     x = polygons.from_discs( md.tensor( rec.points ), md.tensor( rec.radii ), 0.12, 24 )
     assert np.isclose( Loss1d( md, polygons ).value_and_grad( x, 0.0, 1e-3 )[ 0 ], f, rtol = 2e-2 )
-    rec.random_points( 6 )
+    rec.points = None                                                       # ( a new cloud: 6 random balls )
+    rec.add_random_balls( 6, 0.12 )
     x = polygons.from_discs( md.tensor( rec.points ), md.tensor( rec.radii ), 0.12, 6 ).cpu().numpy()
     x = x + 0.02 * np.random.default_rng( 0 ).normal( size = x.shape )
     X = md.tensor( x )
@@ -157,3 +159,14 @@ if test( "2D mesh from balls: the area of a disc full of balls, its contour on t
     assert missing < 0.02 and abs( len( sides ) / len( loops[ 0 ] ) - 1 ) < 0.1, ( missing, len( sides ), len( loops[ 0 ] ) )
     an, fd = finite_difference( on_arrays( rec, Loss1d( md, kind ) ), nodes, eps = 1e-6 )
     assert np.allclose( an, fd, rtol = 1e-2, atol = 1e-3 ), ( an, fd )         # ( loose: the loss has a kink where a side is along a view )
+
+if test( "2D ellipses: round ones are the balls they come from; the gradient matches finite differences" ):
+    from otrec.loss import Loss1d
+    from otrec.shapes import ellipses
+    rec = Reconstruction( sino_of_shapes( TRUTH, 0.12 ), TRUTH, radius = 0.12 )
+    md, f = rec.model, rec.value_and_grad()[ 0 ]
+    x = ellipses.from_discs( md.tensor( rec.points ), md.tensor( rec.radii ), md )
+    assert np.isclose( Loss1d( md, ellipses ).value_and_grad( x, 0.0, 1e-3 )[ 0 ], f, rtol = 1e-9 )
+    x = x.cpu().numpy() + [ 0, 0, 0.01, 0.03, -0.02 ] * np.random.default_rng( 0 ).normal( size = x.shape )
+    an, fd = finite_difference( on_arrays( rec, Loss1d( md, ellipses ) ), x, eps = 1e-6 )
+    assert np.allclose( an, fd, rtol = 1e-4, atol = 1e-8 ), ( an, fd )

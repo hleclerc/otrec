@@ -26,20 +26,20 @@ if p := experiment( "3d",
     image = ball_packing( 2 * p.bins, dim = 3, height = p.height, ball_radii = ( 0.08, 0.15 ), seed = p.seed )
     sino = Sinogram.from_image( image, p.views, p.bins )
 
-    rec = Reconstruction( sino, radius = p.radius, move_tol = p.move_tol, max_iter = p.max_iter, seed = p.seed,
-                          device = None if p.device == "default" else p.device, recorder = Recorder( p.record_every ), verbose = True )
-    rec.random_points( p.n_start, radius = 0.8, height = p.height )
+    rec = Reconstruction( sino, device = None if p.device == "default" else p.device, recorder = Recorder( p.record_every, verbose = True ) )
+    rec.add_random_balls( p.n_start, p.radius )
     t0 = time.perf_counter()
     # ( the grid solver needs a blur and a background that go down: the stages are written out )
     for i, ( sigma, background ) in enumerate( zip( p.sigmas.split( ":" ), p.backgrounds.split( ":" ) ) ):
-        rec.lbfgs( float( sigma ), float( background ) )
+        rec.adjust_parameters( centers = True, x_tol = p.move_tol, max_iter = p.max_iter, sigma = float( sigma ), background = float( background ) )
         if i < p.splits:
-            rec.split( p.division )
+            rec.split_items( p.division )
+            rec.radius = p.radius                                          # ( the radius stays )
     p.results.update( seconds = time.perf_counter() - t0, loss = rec.loss )
     print( p.results )
 
     # the object, for the page: the centres of a sample of its solid voxels
     solid = np.argwhere( image > 0.5 )
     solid = solid[ np.random.default_rng( 1 ).choice( len( solid ), min( 30_000, len( solid ) ), replace = False ) ]
-    viz.export_html( rec, p.out_dir / "cloud.html", title = f"otrec 3D -- a packing of balls, { rec.nb_points } shapes, random start",
+    rec.recorder.write_html( p.out_dir / "cloud.html", title = f"otrec 3D -- a packing of balls, { rec.nb_points } shapes, random start",
                      truth_points = ( solid + 0.5 ) * ( sino.extent / image.shape[ 0 ] ) - sino.extent / 2 )
