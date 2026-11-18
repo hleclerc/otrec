@@ -178,6 +178,8 @@ class Reconstruction:
         md, info = self.model, dict( centers = centers, radii = radii, cov_matrices = cov_matrices )
         if not ( centers or radii or cov_matrices ):
             raise ValueError( "adjust_parameters: say what moves ( centers, radii, cov_matrices )" )
+        if not ( self.radius > 0 ):
+            raise ValueError( "adjust_parameters: the balls have no radius; set `radius` ( `nominal_radius()`, for instance )" )
         if cov_matrices:
             x = md.tensor( self.ellipses ) if self.ellipses is not None else ellipses.from_discs( md.tensor( self.points ), md.tensor( self.radii ), md )
             x = self._stage( "adjust_parameters", info, Loss1d( md, ellipses ), x, sigma, background, x_tol, max_iter, 0 if centers else 2, callback )

@@ -3,11 +3,12 @@ the disk of a packing.
 
     errand run --env torch 'otrec/bench/eval.py::*' --n=100000,1000000              ( from ~/Projects )
     errand run --env lmo-torch 'otrec/bench/eval.py::*' --n=10000000 --device=cuda,cpu"""
-from errand import bench, Param
+from errand import bench, Param, require
 
 if p := bench( "eval", n = Param( 100_000 ), views = Param( 360 ), bins = Param( 256 ), radius = Param( 0.008, help = "of the shapes" ),
                device = Param( "cpu" ), reps = Param( 5 ),
                shapes = Param( "balls", help = "balls, or ellipses ( anisotropic: a width per view )" ) ):
+    require( exclusive = True )      # a timing: the machine to itself ( ADR 0014 )
     import time
 
     import torch

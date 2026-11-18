@@ -36,7 +36,8 @@ for name, m in MACHINES.items():
             "OMPI_MCA_mtl"  : "^psm2,ofi",
             "OMPI_MCA_btl"  : "self,vader,tcp",
         } ),
-    ], driver = "torch", cuda = True )
+    ], needs = { "gpus": 1 },       # every run puts its tensors on the card ( loom's default device )
+       driver = "torch", cuda = True )
 
 # errand.Env( [
 #     errand.Ssh( host = "jz", root = "/lustre/fswork/projects/rech/vst/urg11uj/<projet>" ),

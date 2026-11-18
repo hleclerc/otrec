@@ -35,3 +35,20 @@ def project_image( image, extent, directions, nb_bins, sub = 2 ):
         return torch.nn.functional.adaptive_avg_pool1d( bins.T[ None ], nb_bins )[ 0 ] * ds
 
     return torch.stack( [ view( e ) for e in torch.as_tensor( np.asarray( directions ), dtype = torch.float32 ) ] ).double().numpy()
+
+
+def filtered_backprojection( values, extent, directions, nx ):
+    """2D, the usual reconstruction ( for reference ): the image `[ nx, nx ]` on the centred square of side `extent` whose
+    projections `project_image` would give `values [ nb_views, nb_bins ]`, the views spread over 180 degrees ( a ramp
+    filter, then each view smeared back along its rays )"""
+    V, N = values.shape
+    h = extent / N
+    ramp = np.abs( np.fft.fftfreq( 2 * N, h ) )
+    q = np.fft.ifft( np.fft.fft( values / h, 2 * N, axis = 1 ) * ramp, axis = 1 ).real[ :, :N ]
+    x = -extent / 2 + extent / nx * ( np.arange( nx ) + 0.5 )
+    X, Y = np.meshgrid( x, x, indexing = "ij" )
+    centres = -extent / 2 + h * ( np.arange( N ) + 0.5 )
+    image = np.zeros( ( nx, nx ) )
+    for e, qv in zip( np.asarray( directions ), q ):
+        image += np.interp( X * e[ 0 ] + Y * e[ 1 ], centres, qv, left = 0.0, right = 0.0 )
+    return image * ( np.pi / V )

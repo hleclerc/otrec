@@ -13,7 +13,7 @@
 carrying its share of the intensity of its pixel."""
 import numpy as np
 
-from .projection import project_image
+from .projection import filtered_backprojection, project_image
 from .shapes import gaussian_matrix
 
 
@@ -44,6 +44,11 @@ class Sinogram:
         s = cls( np.ndim( image ), nb_views, nb_bins, extent )
         s.values = project_image( image, extent, s.axes[ :, 0, :2 ], nb_bins )
         return s
+
+    def fbp( self, nx = None ):
+        """2D: the filtered back projection, `[ nx, nx ]` ( default `nb_bins` ) on the centred square of side `extent`, laid
+        out as the images of `from_image`: the usual reconstruction, for reference"""
+        return filtered_backprojection( self.values, self.extent, self.axes[ :, 0, : ], nx or self.nb_bins )
 
     # -- geometry ----------------------------------------------------------------------------------------------------------
 

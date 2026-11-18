@@ -3,3 +3,5 @@ from .Reconstruction import Reconstruction as Reconstruction
 from .Recorder import Recorder as Recorder
 from .Sinogram import Sinogram as Sinogram
 from .packing import ball_packing as ball_packing
+from .Scan import Scan as Scan
+from .download import cached_download as cached_download, raw_rows as raw_rows

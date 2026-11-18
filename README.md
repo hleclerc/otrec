@@ -27,7 +27,10 @@ rec.points, rec.ellipses, rec.recorder.steps                          # [ 50_000
 Each directory has its own docstring ( `__init__.py` ) that says what its files do.
 
     src/otrec/
-        Sinogram.py          the data: geometry of the views, intensities, the diracs; `from_image`
+        Sinogram.py          the data: geometry of the views, intensities, the diracs; `from_image`, `fbp` ( for reference )
+        Scan.py              a MEASURED parallel-beam slice and its steps: counts -> line integrals, axis, centring, air,
+                             beam hardening, clipping, -> Sinogram ( 360 folded onto 180, binned )
+        download.py          files fetched on first use into $OTREC_DATA or ~/.cache/otrec; one row of a raw stack by HTTP ranges
         projection.py        the line integrals of an image ( what `from_image` runs )
         Reconstruction.py    the problem, and the steps: add_random_balls, split_items, adjust_parameters ( one stage ), fit_polygons; multiscale ( a recipe )
         lbfgs.py             L-BFGS on tensors, on their device, stopped when the shapes no longer move
@@ -41,7 +44,8 @@ Each directory has its own docstring ( `__init__.py` ) that says what its files 
         packing/             ball_packing: the image of a disc ( a cylinder ) minus balls settled by gravity
     experiments/             exp_2d.py, exp_3d.py: a packing reconstructed from a random start ( errand entries );
                              exp_2d.py::ellipses: balls, then ellipses ( centre + covariance ), the steps written out;
-                             exp_2d_polygons.py: balls, then polygons; exp_2d_mesh.py: balls, then a mesh of their contours
+                             exp_2d_polygons.py: balls, then polygons; exp_2d_mesh.py: balls, then a mesh of their contours;
+                             exp_2d_real.py: measured scans of binary objects, from the simplest to the hardest
     bench/                   eval.py: the time of one evaluation of the 2D loss
     tests/                   errand run --no-queue --env torch 'otrec/tests/test_X.py::*'    ( from ~/Projects, one file per call )
     attic/                   everything from before ( not imported )
@@ -156,6 +160,27 @@ The object is `ball_packing`, the start is random. Every size is a declared para
 file ). Each run writes one HTML page: the cloud frame by frame ( every shape as it is: balls at their radius, ellipses, polygons ) over the outline of
 the object, and the curves ( loss, image error, blur, number of shapes ); a click in a curve goes to that iteration. The
 final numbers go to the results of the run.
+
+## Measured data
+
+A `Scan` is one slice as a camera gives it. Each step makes a new `Scan`, and an example writes them in the order it needs:
+
+```python
+scan = Scan.from_counts( projections, flats, darks, angles )      # -log( ( p - dark ) / ( flat - dark ) )
+scan = scan.centred( scan.rotation_axis(), radius = 800 )          # on the axis, the disk every view sees whole
+scan = scan.minus_air( 0.03 )                                     # the level of the air, view by view
+scan = scan.linearized()                                          # beam hardening: p + a p^2, equal masses
+sino = scan.clipped().sinogram( nb_bins = 512, nb_views = 800 )   # 360 folded onto 180, binned
+```
+
+A drift of the beam that scales a whole view needs no step, since the loss normalizes each view. The examples give the
+URL of their data. `cached_download( url )` keeps the file. `raw_rows( url, shape, row )` fetches only one row of each
+image of a raw stack, by HTTP ranges, which turns 12 GB of projections into 10 MB.
+
+`experiments/exp_2d_real.py` covers binary objects ( matter or void ), from the simplest to the hardest. Its strategy is
+one function ( `solve` ), written step by step. The first case is a metal foam ( Diamond I12 ), static and entirely in
+the field, from the counts of the camera. Next comes sandstone ( SLS TOMCAT ), bigger than the field. Last is bamboo
+( ESRF ID19 ), bigger than the field and with the rings of the detector.
 
 ## Speed ( 2D )
 
