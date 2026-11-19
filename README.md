@@ -29,7 +29,8 @@ Each directory has its own docstring ( `__init__.py` ) that says what its files 
     src/otrec/
         Sinogram.py          the data: geometry of the views, intensities, the diracs; `from_image`, `fbp` ( for reference )
         Scan.py              a MEASURED parallel-beam slice and its steps: counts -> line integrals, axis, centring, air,
-                             beam hardening, clipping, -> Sinogram ( 360 folded onto 180, binned )
+                             beam hardening, clipping, phase contrast, matter bigger than the field ( taken off ),
+                             -> Sinogram ( 360 folded onto 180, binned )
         download.py          files fetched on first use into $OTREC_DATA or ~/.cache/otrec; one row of a raw stack by HTTP ranges
         projection.py        the line integrals of an image ( what `from_image` runs )
         Reconstruction.py    the problem, and the steps: add_random_balls, split_items, adjust_parameters ( one stage ), fit_polygons; multiscale ( a recipe )

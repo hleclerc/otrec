@@ -9,8 +9,10 @@ usual reconstruction ( filtered back projection ), for reference.
     pencil      ESRF ID19, 2010: in the field, but NOT binary ( wood, glue, a graphite lead ): what the balls do with
                 densities they cannot have
     sandstone   quartz grains and pores, SLS TOMCAT, 2013: the counts of the camera too, but the rock is bigger than the
-                field ( matter that only some views see )
-    bamboo      its fibres, ESRF ID19, 2020, 360 degrees: bigger than the field, and the rings of a detector"""
+                field ( matter that only some views see ): what it adds to the views is estimated and taken off
+                ( `Scan.outside_removed`, `moments_matched` )
+    bamboo      its fibres, ESRF ID19, 2020, 360 degrees: bigger than the field, the rings of a detector, and phase
+                contrast ( `Scan.phase_retrieved` )"""
 from errand import experiment, Param
 
 
@@ -117,7 +119,8 @@ if p := experiment( "pencil", **PARAMS ):
     rec.recorder.close( html = p.out_dir / "pencil.html" )
 
 
-if p := experiment( "sandstone", slice = Param( 540, help = "270, 540, 810 or 1080" ), **PARAMS ):
+if p := experiment( "sandstone", slice = Param( 540, help = "270, 540, 810 or 1080" ),
+                    paganin = Param( 10.0, help = "the filter of the phase contrast, in pixels^2 ( 0: none )" ), **PARAMS ):
     import zipfile
     import numpy as np
     import scipy.io
@@ -129,17 +132,23 @@ if p := experiment( "sandstone", slice = Param( 540, help = "270, 540, 810 or 10
     with zipfile.ZipFile( archive ) as z, z.open( f"slice_{ p.slice:04d}_data.mat" ) as f:
         m = scipy.io.loadmat( f )
 
-    # the steps
+    # the steps. No air: the rock is bigger than the field, the views see more or less of it ( their masses by 20 % );
+    # nothing that needs the whole object ( `aligned`, `linearized`, `equal_masses` ) applies
     scan = Scan.from_counts( m[ "X_proj" ].T, m[ "X_flat" ].T, m[ "X_dark" ].T, angles = np.radians( 0.12 ) * np.arange( 1500 ) )
+    scan = scan.rings_removed( 41 )
+    if p.paganin:
+        scan = scan.phase_retrieved( p.paganin )                              # the fringes on the edges of the grains
     scan = scan.centred( scan.rotation_axis() )
-    sino = scan.clipped().sinogram( reduction = p.reduction )                 # ( no air: the rock fills the field )
+    scan = scan.outside_removed()                                             # the rock around the field: half the mass of
+    scan = scan.moments_matched()                                             # a view, a bright ring in the FBP before
+    sino = scan.clipped().sinogram( reduction = p.reduction )
 
     rec = Reconstruction( sino, recorder = recorder( sino, p.out_dir / "sandstone.sviz", f"otrec -- sandstone ( SLS TOMCAT ), slice { p.slice }", 100 ) )
     solve( rec, p )
     rec.recorder.close( html = p.out_dir / "sandstone.html" )
 
 
-if p := experiment( "bamboo", **PARAMS ):
+if p := experiment( "bamboo", paganin = Param( 30.0, help = "the filter of the phase contrast, in pixels^2 ( 0: none )" ), **PARAMS ):
     import numpy as np
     from otrec import Reconstruction, Scan, cached_download
 
@@ -148,9 +157,15 @@ if p := experiment( "bamboo", **PARAMS ):
     z = np.load( cached_download( "http://www.silx.org/pub/nabu/data/bamboo_rings.npz",
                                   sha256 = "3ddd21e8ce3138604163493ddea6e7b499960383d95d90b751896ca8b9ab9ef8" ) )
 
-    # the steps
-    scan = Scan( z[ "sino" ], angles = np.linspace( 0, 2 * np.pi, 2000, endpoint = False ) )
-    scan = scan.centred( float( z[ "rot_center" ] ) )
+    # the steps. Bigger than the field; and PHASE contrast: the edges of the cells drawn by fringes, more than the
+    # matter by its density. The fibres run along the axis: Paganin's filter along the detector is the exact one
+    scan = Scan( z[ "sino" ], angles = np.linspace( 0, 2 * np.pi, 2000, endpoint = False ), cor = float( z[ "rot_center" ] ) )
+    scan = scan.rings_removed( 41 )                                           # ( 9 pixels leave wide rings; 41: as `sino_dering` )
+    if p.paganin:
+        scan = scan.phase_retrieved( p.paganin )                              # ( the negative mass of the FBP: 44 % -> 5 % )
+    scan = scan.centred()
+    scan = scan.outside_removed()
+    scan = scan.moments_matched()
     sino = scan.clipped().sinogram( reduction = p.reduction )
 
     rec = Reconstruction( sino, recorder = recorder( sino, p.out_dir / "bamboo.sviz", "otrec -- bamboo ( ESRF ID19 )", 100 ) )

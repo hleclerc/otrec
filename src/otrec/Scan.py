@@ -14,6 +14,9 @@ gives a new `Scan`: an example writes them one after the other, in the order it 
     minus_air( fraction )    the level of the air ( the ends of each view ) taken off each view
     linearized()             beam hardening: `p + a p^2`, `a` such that every view holds the same mass
     clipped()                what is negative ( noise, phase fringes ) set to zero
+    phase_retrieved( a )     phase contrast ( fringes on the edges ) -> a density: Paganin's filter along the detector
+    outside_removed()        matter bigger than the field: what the matter outside the disk adds, estimated and taken off
+    moments_matched()        then the same mass in every view, its centre on a sinusoid ( Helgason-Ludwig, orders 0, 1 )
     zeroed_air( k )          what is under `k` times the noise of the air set to zero: the air at 0, not at the mean of
                              its clipped noise ( a thin layer of matter all over the disk, which draws shapes into it )
     equal_masses()           each view scaled to the mean mass: what an object entirely in the field gives
@@ -134,6 +137,75 @@ class Scan:
         it ). ( The loss normalizes each view: this changes what the FBP and the pages see, not the reconstruction )"""
         m = self.values.sum( 1, keepdims = True )
         return self._with( self.values * ( m.mean() / np.where( m > 0, m, 1.0 ) ) )
+
+    def phase_retrieved( self, a ):
+        """PHASE CONTRAST ( a beam that travels after the sample: each edge drawn by a bright and a dark fringe ) turned into
+        a density: each view filtered by `1 / ( 1 + a k^2 )` along the detector ( Paganin, `a` in pixels^2: `delta / beta`
+        times the distance times the wavelength over 4 pi ). In 1D it is Paganin's filter exactly where the object does not
+        vary along the axis ( fibres along it ); elsewhere the fringes are only lessened"""
+        N = self.nb_pixels
+        k = 2 * np.pi * np.fft.rfftfreq( 2 * N )
+        mirrored = np.concatenate( [ self.values, self.values[ :, ::-1 ] ], 1 )             # ( no jump at the ends )
+        return self._with( np.fft.irfft( np.fft.rfft( mirrored, axis = 1 ) / ( 1 + a * k * k ), 2 * N, axis = 1 )[ :, :N ] )
+
+    def outside_removed( self, pad = 1.0, nb_bins = 512, nb_views = 360, edge = 8 ):
+        """matter BIGGER THAN THE FIELD: what the matter outside the disk adds to the views, taken off them, so that they are
+        the projections of the disk alone ( what the shapes can give ). The views, `nb_bins` and `nb_views` of them, are
+        extended by `pad` radii on each side ( the value at their ends, mean of `edge` bins, falling to 0 as a cosine ); the
+        filtered back projection of that, outside the disk, projected back, is the estimate, interpolated onto the views.
+        It is wrong where the extension is ( the shape of the sample is not known ): by a smooth amount, which
+        `moments_matched` corrects"""
+        from .projection import filtered_backprojection, project_image
+        if not self.is_centred:
+            raise ValueError( "Scan.outside_removed: centre it first ( `centred` )" )
+        sino = self.sinogram( nb_bins = nb_bins, nb_views = nb_views )
+        W = int( round( pad * nb_bins / 2 ) )
+        taper = np.cos( 0.5 * np.pi * ( np.arange( W ) + 0.5 ) / W ) ** 2
+        v = sino.values
+        ends = v[ :, :edge ].mean( 1, keepdims = True ) * taper[ ::-1 ], v[ :, -edge: ].mean( 1, keepdims = True ) * taper
+        n, E, directions = nb_bins + 2 * W, 2.0 * ( nb_bins + 2 * W ) / nb_bins, sino.axes[ :, 0, : ]
+        image = filtered_backprojection( np.concatenate( [ ends[ 0 ], v, ends[ 1 ] ], 1 ), E, directions, n )
+        x = -E / 2 + E / n * ( np.arange( n ) + 0.5 )
+        image[ x[ :, None ] ** 2 + x[ None, : ] ** 2 <= 1.0 ] = 0.0
+        outside = project_image( image, E, directions, n )[ :, W:W + nb_bins ]
+
+        # onto the views of the scan: a view at t + pi is the one at t mirrored; linear in the angle ( periodic over
+        # half a turn, with the mirror ), and in the position along the detector. ( Masses of bins -> line integrals )
+        outside = outside / ( 2 / nb_bins )
+        t = np.mod( np.arctan2( directions[ :, 1 ], directions[ :, 0 ] ), np.pi )
+        order = np.argsort( t )
+        t, outside = np.concatenate( [ t[ order ], [ t[ order[ 0 ] ] + np.pi ] ] ), np.concatenate( [ outside[ order ], outside[ order[ :1 ], ::-1 ] ] )
+        t, outside = np.concatenate( [ [ t[ -2 ] - np.pi ], t ] ), np.concatenate( [ outside[ -2: -1, ::-1 ], outside ] )
+        bins = -1 + 2 / nb_bins * ( np.arange( nb_bins ) + 0.5 )
+        pixels = -1 + 2 / self.nb_pixels * ( np.arange( self.nb_pixels ) + 0.5 )
+        values = self.values.copy()
+        for i, angle in enumerate( self.angles ):
+            u = np.mod( angle, 2 * np.pi )
+            behind = u >= np.pi
+            u -= np.pi * behind
+            j = min( max( int( np.searchsorted( t, u ) ), 1 ), len( t ) - 1 )
+            f = ( u - t[ j - 1 ] ) / ( t[ j ] - t[ j - 1 ] )
+            row = ( 1 - f ) * outside[ j - 1 ] + f * outside[ j ]
+            values[ i ] -= np.interp( -pixels if behind else pixels, bins, row )
+        return self._with( values )
+
+    def moments_matched( self ):
+        """the first two conditions of Helgason and Ludwig: the projections of the disk have the same MASS in every view, and
+        their CENTRE of mass on a sinusoid. What departs from them ( what is left of `outside_removed` ) is taken off each
+        view as a smooth profile that vanishes at the ends, as the projections of the disk do: `1 - s^2` for the mass,
+        `s ( 1 - s^2 )` for the centre ( `s` along the detector, 1 at the ends ). ( The chords of an annulus around the disk,
+        closer to where the error comes from, are not 0 at the ends: an edge in the views, a ring in the image ). The
+        level stays: the mean mass of the views"""
+        if not self.is_centred:
+            raise ValueError( "Scan.moments_matched: centre it first ( `centred` )" )
+        s = -1 + 2 / self.nb_pixels * ( np.arange( self.nb_pixels ) + 0.5 )
+        w = 1 - s * s
+        m, m1 = self.values.sum( 1 ), ( self.values * s ).sum( 1 )
+        A = np.stack( [ np.ones_like( self.angles ), np.cos( self.angles ), np.sin( self.angles ) ], 1 )
+        centre = A @ np.linalg.lstsq( A, m1 / m, rcond = None )[ 0 ]
+        even = ( m - m.mean() ) / w.sum()
+        odd = ( m1 - m.mean() * centre ) / ( s * s * w ).sum()
+        return self._with( self.values - even[ :, None ] * w - odd[ :, None ] * ( s * w ) )
 
     def sinogram( self, nb_bins = None, nb_views = None, reduction = 1 ):
         """the `Sinogram` of a centred scan, of extent 2 ( the disk of radius 1 ): each view at `t + pi` is the view at
