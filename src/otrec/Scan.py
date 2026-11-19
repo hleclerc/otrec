@@ -7,10 +7,16 @@ gives a new `Scan`: an example writes them one after the other, in the order it 
 
     Scan.from_counts( projections, flats, darks, angles )    the counts of a camera -> line integrals
     rotation_axis()          the axis, found by matching views half a turn apart
+    aligned()                the views shifted so that their centres of mass follow the sinusoid of a still object
+                             ( matter entirely in the field ): the axis, and the motion of the sample along the detector
+    rings_removed( width )   the bias of each pixel of the detector ( what makes rings ) taken off every view
     centred( cor, radius )   the pixels centred on the axis, over a disk that every view sees whole
     minus_air( fraction )    the level of the air ( the ends of each view ) taken off each view
     linearized()             beam hardening: `p + a p^2`, `a` such that every view holds the same mass
     clipped()                what is negative ( noise, phase fringes ) set to zero
+    zeroed_air( k )          what is under `k` times the noise of the air set to zero: the air at 0, not at the mean of
+                             its clipped noise ( a thin layer of matter all over the disk, which draws shapes into it )
+    equal_masses()           each view scaled to the mean mass: what an object entirely in the field gives
     sinogram( nb_bins, nb_views )    360 degrees folded onto 180, pixels and views averaged down: a `Sinogram`
 
 What the loss normalizes needs no step: a drift of the beam that scales a whole view."""
@@ -59,6 +65,35 @@ class Scan:
         shift = ( k if k < N else k - 2 * N ) + 0.5 * ( y0 - y2 ) / ( y0 - 2 * y1 + y2 )      # a( x ) = b( x - shift )
         return ( N - 1 + shift ) / 2
 
+    def aligned( self, threshold = 0.0 ):
+        """a still object in parallel beam: the centre of mass of view `t` is `cor + a cos t + b sin t` ( its mass the
+        same in every view ). The sinusoid is fitted on the views; each view is shifted onto it, and `cor` is its centre.
+        What it corrects: an axis given wrong, and the motion of the sample along the detector ( drift, vibrations ). The
+        matter must be entirely in the field, the air at 0 ( `minus_air`, `zeroed_air` ); the values under `threshold`
+        are left out of the centres"""
+        x = np.arange( self.nb_pixels, dtype = float )
+        w = np.where( self.values > threshold, self.values, 0.0 )
+        c = ( w * x ).sum( 1 ) / np.maximum( w.sum( 1 ), 1e-300 )
+        A = np.stack( [ np.ones_like( self.angles ), np.cos( self.angles ), np.sin( self.angles ) ], 1 )
+        coef = np.linalg.lstsq( A, c, rcond = None )[ 0 ]
+        shift = A @ coef - c                                                      # where each view must go
+        cum = np.concatenate( [ np.zeros( ( len( self.values ), 1 ) ), np.cumsum( self.values, 1 ) ], 1 )
+        edges = np.arange( self.nb_pixels + 1 ) - 0.5
+        values = np.diff( np.stack( [ np.interp( edges - d, edges, cu ) for cu, d in zip( cum, shift ) ] ), axis = 1 )
+        out = self._with( values, cor = coef[ 0 ] )
+        out.shifts = shift
+        return out
+
+    def rings_removed( self, width = 9 ):
+        """the RINGS: a pixel of the detector that reads a bit too much or too little does it in every view ( a stripe of
+        the sinogram, a ring in the image ). Its bias is what the mean view departs from a smooth curve ( a polynomial
+        of degree 3 over `width` pixels, Savitzky-Golay: the curvature of the object stays ); it is taken off every
+        view. ( A bias that varies slowly along the detector stays, as would a detail of the object as thin as a pixel
+        sitting on the axis, the same in every view )"""
+        from scipy.signal import savgol_filter
+        mean = self.values.mean( 0 )
+        return self._with( self.values - ( mean - savgol_filter( mean, width, 3, mode = "interp" ) )[ None ] )
+
     def centred( self, cor = None, radius = None ):
         """the views resampled on pixels of the same width, centred on the axis `cor` ( default: `self.cor` ), over the
         disk of `radius` pixels ( default: the largest that every view sees whole; less when the object is smaller )"""
@@ -85,10 +120,26 @@ class Scan:
     def clipped( self ):
         return self._with( np.maximum( self.values, 0.0 ) )
 
-    def sinogram( self, nb_bins = 512, nb_views = None ):
+    def zeroed_air( self, k = 3.0, fraction = 0.03 ):
+        """the values under `k sigma` set to zero, `sigma` the noise of the air ( a robust deviation of the `fraction` of
+        the pixels at each end of the views, all views together: take the air off first, `minus_air` ). Negative values
+        go too ( a clip ). The matter loses the little of it that is under the threshold"""
+        n = max( 1, int( fraction * self.nb_pixels ) )
+        air = np.concatenate( [ self.values[ :, :n ], self.values[ :, -n: ] ], 1 )
+        sigma = 1.4826 * np.median( np.abs( air - np.median( air ) ) )
+        return self._with( np.where( self.values < k * sigma, 0.0, self.values ) )
+
+    def equal_masses( self ):
+        """each view scaled so that its mass is the mean one ( the matter entirely in the field: every view sees all of
+        it ). ( The loss normalizes each view: this changes what the FBP and the pages see, not the reconstruction )"""
+        m = self.values.sum( 1, keepdims = True )
+        return self._with( self.values * ( m.mean() / np.where( m > 0, m, 1.0 ) ) )
+
+    def sinogram( self, nb_bins = None, nb_views = None, reduction = 1 ):
         """the `Sinogram` of a centred scan, of extent 2 ( the disk of radius 1 ): each view at `t + pi` is the view at
-        `t` mirrored; the views grouped by angle into `nb_views` ( default: as many as over half a turn ) and averaged;
-        the pixels summed into `nb_bins`"""
+        `t` mirrored; the views grouped by angle into `nb_views` and averaged; the pixels summed into `nb_bins`. By
+        default, the data as they are: a bin per pixel, a view per view over half a turn -- or `reduction` times fewer
+        of both ( a faster run, to try things )"""
         if not self.is_centred:
             raise ValueError( "Scan.sinogram: centre it first ( `centred` )" )
         values = self.values.copy()
@@ -97,7 +148,8 @@ class Scan:
         values[ behind ] = values[ behind, ::-1 ]
         u -= behind
 
-        nb_views = int( nb_views or ( ~behind ).sum() )
+        nb_views = int( nb_views or max( 1, ( ~behind ).sum() // reduction ) )
+        nb_bins = int( nb_bins or max( 1, self.nb_pixels // reduction ) )
         group = np.minimum( np.floor( u * nb_views + 1e-6 ).astype( int ), nb_views - 1 )
         count = np.bincount( group, minlength = nb_views )
         if ( count == 0 ).any():

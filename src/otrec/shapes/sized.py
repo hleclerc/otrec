@@ -4,6 +4,9 @@ optimized as it stands ( no constraint, every column a length ):
 
     x[ :, :2 ]    the centre
     x[ :, 2 ]     SCALE r0 log( radius / r0 ): 0 is the radius `r0`
+    x[ :, 3 ]     ( optional, `x [ n, 4 ]` ) DENSITY r0 log( density ): a density of its own, 0 is 1. The mass is then
+                  `density radius^2`. `DENSITY = SCALE / 2`: a step of the density moves the mass as much as a step of
+                  the radius ( the mass goes as the square of the radius ). Kept in `[ 1 / max_ratio^2, max_ratio^2 ]`
 
 The radii are kept in `[ r0 / max_ratio, r0 max_ratio ]` ( what one shape may cover: its cost ) and the balls
 inside the observable domain. The kernels are those of ellipses with a mass each ( `fused` ): a ball is a round one."""
@@ -16,10 +19,22 @@ from . import fused
 from .balls import inside
 
 SCALE = 10.0
+DENSITY = SCALE / 2
 
 
-def pack( centres, radii, r0 ):
-    return torch.cat( [ centres, SCALE * r0 * torch.log( radii / r0 )[ :, None ] ], 1 )
+def pack( centres, radii, r0, densities = None ):
+    cols = [ centres, SCALE * r0 * torch.log( radii / r0 )[ :, None ] ]
+    if densities is not None:
+        cols.append( DENSITY * r0 * torch.log( densities )[ :, None ] )
+    return torch.cat( cols, 1 )
+
+
+def weights( x, model, column = 3 ):
+    """`[ n ]`: the density of each shape, 1 without the column ( `x [ n, column ]` )"""
+    if x.shape[ 1 ] <= column:
+        return torch.ones_like( x[ :, 0 ] )
+    m = model.max_ratio ** 2
+    return torch.exp( x[ :, column ] / ( DENSITY * model.radius ) ).clamp( 1 / m, m )
 
 
 def discs( x, model ):
@@ -29,11 +44,27 @@ def discs( x, model ):
     return inside( x[ :, :2 ], r, model.limit ), r
 
 
+def bounded( x, model, column, scale, ratio ):
+    """the column `column` ( `scale r0 log( value / r0 )` ) kept where `value / r0` is in `[ 1 / ratio, ratio ]`"""
+    r0, lim = model.radius, scale * model.radius * math.log( ratio )
+    return x[ :, column : column + 1 ].clamp( -lim, lim )
+
+
+def project( x, model ):
+    """the rows brought back inside ( `lbfgs( project = )` ): the same shapes. The radius and the density too, into
+    their bounds: beyond, a row has no derivative towards them, and L-BFGS would push on a wall"""
+    cols = [ discs( x, model )[ 0 ].detach(), bounded( x, model, 2, SCALE, model.max_ratio ) ]
+    if x.shape[ 1 ] > 3:
+        cols.append( bounded( x, model, 3, DENSITY, model.max_ratio ** 2 ) )
+    return torch.cat( cols, 1 )
+
+
 def shapes( x, model ):
     """`( centres [ n, 2 ], C [ n, 3 ], masses [ n ] )`: what the kernels take"""
     c, r = discs( x, model )
     r2 = r * r
-    return c, torch.stack( [ r2, r2, torch.zeros_like( r2 ) ], 1 ), r2 / r2.sum()
+    m = r2 * weights( x, model )
+    return c, torch.stack( [ r2, r2, torch.zeros_like( r2 ) ], 1 ), m / m.sum()
 
 
 def _window( model ):

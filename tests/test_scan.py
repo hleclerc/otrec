@@ -34,3 +34,55 @@ if test( "counts -> line integrals; the air level taken off; beam hardening undo
     s = scan.linearized().values.sum( 1 )
     assert np.ptp( s ) < np.ptp( hard.sum( 1 ) ) / 5                             # ( one coefficient: not exact )
     assert ( Scan( p - 0.5, scan.angles ).clipped().values >= 0 ).all()
+
+
+if test( "zeroed_air: the air at 0, the matter kept; equal_masses: one mass per view" ):
+    import numpy as np
+    from otrec import Scan
+    rng = np.random.default_rng( 0 )
+    V, N = 40, 200
+    x = np.arange( N ) - ( N - 1 ) / 2
+    matter = np.clip( 1 - ( x / 50 ) ** 2, 0, None ) * 0.5                       # in the middle, air on both sides
+    values = matter * ( 1 + 0.05 * np.sin( np.arange( V ) ) )[ :, None ] + 0.01 * rng.normal( size = ( V, N ) )
+    scan = Scan( values, np.linspace( 0, np.pi, V, endpoint = False ) )
+    z = scan.zeroed_air( 3.0, 0.1 )
+    assert ( z.values[ :, :40 ] == 0 ).mean() > 0.99 and ( z.values[ :, -40: ] == 0 ).mean() > 0.99
+    assert ( z.values >= 0 ).all()
+    inside = np.abs( x ) < 40
+    assert np.allclose( z.values[ :, inside ], values[ :, inside ] )             # ( well above the noise: untouched )
+    m = z.equal_masses().values.sum( 1 )
+    assert np.allclose( m, m.mean() ) and np.isclose( m.mean(), z.values.sum( 1 ).mean() )
+
+
+if test( "aligned: the axis and the motion of the sample from the centres of mass; rings_removed: the bias of each pixel" ):
+    import numpy as np
+    from otrec import Scan
+    rng = np.random.default_rng( 1 )
+    V, N, R, cor = 180, 128, 12.0, 61.3
+    t = np.linspace( 0, np.pi, V, endpoint = False )
+    motion = rng.normal( scale = 1.0, size = V )
+    centre = cor + 20 * np.cos( t - 0.4 ) + motion                       # a disk off the axis, the sample shaking
+    edges = np.arange( N + 1 ) - 0.5
+    F = lambda u: R * R * ( np.arcsin( np.clip( u / R, -1, 1 ) ) + np.clip( u / R, -1, 1 ) * np.sqrt( 1 - np.clip( u / R, -1, 1 ) ** 2 ) )
+    values = np.diff( F( edges[ None ] - centre[ :, None ] ), axis = 1 )   # the exact chord integrated over each pixel
+    a = Scan( values, t ).aligned()
+    assert abs( a.cor - cor ) < 0.05, a.cor
+    # ( what of the motion is a sinusoid of the angle cannot be told from the path of the object: the rest comes back )
+    A = np.stack( [ np.ones( V ), np.cos( t ), np.sin( t ) ], 1 )
+    rest = motion - A @ np.linalg.lstsq( A, motion, rcond = None )[ 0 ]
+    assert np.std( a.shifts + rest ) < 0.05 * np.std( rest )
+    # ( what departs from a cubic over 9 pixels goes: a bias that varies slowly along the detector stays )
+    bias = 0.02 * values.max() * rng.normal( size = N )
+    r = Scan( values + bias, t ).rings_removed()
+    from scipy.signal import savgol_filter
+    # ( and a little of the object: where its mean view has a kink, at the ends of the band the disk sweeps )
+    assert np.std( ( r.values - values ).mean( 0 ) - savgol_filter( bias, 9, 3, mode = "interp" ) ) < 0.2 * bias.std()
+
+
+if test( "sinogram( reduction ): that many times fewer bins and views" ):
+    import numpy as np
+    from otrec import Scan
+    s = Scan( np.random.default_rng( 0 ).random( ( 120, 64 ) ), np.linspace( 0, np.pi, 120, endpoint = False ) )
+    full, coarse = s.sinogram(), s.sinogram( reduction = 4 )
+    assert ( full.nb_views, full.nb_bins ) == ( 120, 64 ) and ( coarse.nb_views, coarse.nb_bins ) == ( 30, 16 )
+    assert np.isclose( coarse.values.sum() * 4, full.values.sum() )            # ( views averaged, bins summed )

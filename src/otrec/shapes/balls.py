@@ -7,7 +7,8 @@ from . import fused
 
 def inside( centres, reach, limit ):
     """the centres, pulled back towards the origin where a shape that reaches `reach` ( a number, or `[ n ]` ) around its
-    centre would leave the centred ball of radius `limit`: what every view sees"""
+    centre would leave the centred ball of radius `limit`: what every view sees. ( Beyond, a centre has no radial
+    derivative: a cloud starts a stage inside, see `Reconstruction` )"""
     room = ( limit - reach ) / torch.linalg.vector_norm( centres, dim = 1 ).clamp( min = 1e-300 )
     return centres * room.clamp( 0, 1 )[ :, None ]
 
@@ -15,6 +16,16 @@ def inside( centres, reach, limit ):
 def shapes( x, model ):
     """`( centres [ n, dim ], )`"""
     return ( inside( x, model.radius, model.limit ), )
+
+
+def weights( x, model ):
+    """`[ n ]`: the density of each ball: 1"""
+    return torch.ones_like( x[ :, 0 ] )
+
+
+def project( x, model ):
+    """the rows brought back inside ( `lbfgs( project = )` ): the same shapes"""
+    return shapes( x, model )[ 0 ].detach()
 
 
 def deposit( centres, model ):

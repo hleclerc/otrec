@@ -73,3 +73,76 @@ if test( "2D: covariances alone leave the centres; the recorder keeps every step
         assert False
     except ValueError:
         pass
+
+
+if test( "balls beyond the border of the domain come back ( projected steps )" ):
+    import numpy as np
+    from otrec import Reconstruction, Sinogram
+    truth = np.array( [ [ 0.1, 0.0 ], [ -0.1, 0.05 ], [ 0.0, -0.1 ], [ 0.05, 0.1 ] ] )
+    s = Sinogram( 2, 24, 64, extent = 2.0 )
+    s.values = Reconstruction( s, truth, radius = 0.15 ).image( sigma = 0.0, background = 0.0 )
+    start = np.array( [ [ 0.98, 0.0 ], [ 0.0, -0.97 ], [ -0.7, 0.7 ], [ 0.2, 0.1 ] ] )   # three where a ball of 0.15 cannot be
+    rec = Reconstruction( s, start, radius = 0.15, device = "cpu" )
+    rec.adjust_parameters( centers = True, x_tol = 0.01 )
+    assert np.linalg.norm( rec.points, axis = 1 ).max() < 0.5, rec.points
+
+
+if test( "densities: a density each, found from the sinogram of balls of two densities; kept by the stages after" ):
+    import numpy as np
+    from otrec import Reconstruction, Sinogram
+    rng = np.random.default_rng( 3 )
+    pts = rng.uniform( -0.5, 0.5, size = ( 30, 2 ) )
+    truth = np.where( pts[ :, 0 ] > 0, 3.0, 1.0 )                           # the right half three times as dense
+    s = Sinogram( 2, 36, 96, extent = 2.0 )
+    ref = Reconstruction( s, pts, radius = 0.08, device = "cpu" )
+    ref.densities = truth
+    s.values = ref.image( sigma = 0.0, background = 0.0 )
+    rec = Reconstruction( s, pts, radius = 0.08, device = "cpu" )
+    rec.adjust_parameters( densities = True, x_tol = 1e-4 )
+    d = rec.densities / rec.densities[ truth == 1 ].mean()                  # ( a density is known up to a factor )
+    assert np.allclose( d, truth, rtol = 0.05 ), d
+    rec.adjust_parameters( centers = True, radii = True, x_tol = 0.01 )     # ( kept, fixed )
+    assert np.allclose( rec.densities / rec.densities[ truth == 1 ].mean(), d )
+    rec.adjust_parameters( centers = True, cov_matrices = True, densities = True, x_tol = 0.01 )
+    assert rec.ellipses.shape == ( 30, 5 ) and rec.densities.shape == ( 30, )
+    assert "density" in rec.fields()
+    rec.adjust_parameters( centers = True, x_tol = 0.01 )                   # ( balls of one density: forgotten )
+    assert rec.densities is None
+
+
+if test( "remove_isolated: the balls alone far from the others go, with their radii and densities" ):
+    import numpy as np
+    from otrec import Reconstruction, Sinogram
+    g = np.stack( np.meshgrid( np.linspace( -0.3, 0.3, 7 ), np.linspace( -0.3, 0.3, 7 ) ), -1 ).reshape( -1, 2 )
+    pts = np.concatenate( [ g, [ [ 0.8, 0.0 ], [ -0.6, -0.6 ] ] ] )
+    rec = Reconstruction( Sinogram( 2, 8, 32, extent = 2.0 ), pts, radius = 0.05 )
+    rec.densities = np.arange( len( pts ), dtype = float ) + 1
+    rec.remove_isolated( 1.5 )
+    assert rec.nb_points == 49 and np.allclose( rec.points, g ) and np.allclose( rec.densities, np.arange( 49 ) + 1 )
+    assert rec.recorder.steps[ -1 ][ "removed" ] == 2
+
+
+if test( "a removal at the end keeps the ellipses of the others, logs its loss, and records a frame" ):
+    import numpy as np
+    from otrec import Reconstruction, Recorder, Sinogram
+    g = np.stack( np.meshgrid( np.linspace( -0.3, 0.3, 5 ), np.linspace( -0.3, 0.3, 5 ) ), -1 ).reshape( -1, 2 )
+    s = Sinogram( 2, 24, 64, extent = 2.0 )
+    s.values = Reconstruction( s, g, radius = 0.08 ).image( sigma = 0.0, background = 0.0 )
+    rec = Reconstruction( s, np.concatenate( [ g, [ [ 0.8, 0.0 ] ] ] ), radius = 0.08, recorder = Recorder( every = 5 ), device = "cpu" )
+    rec.adjust_parameters( cov_matrices = True, max_iter = 10 )                 # ( the centres fixed: the stray one stays )
+    n = len( rec.recorder.frames )
+    rec.remove_isolated( 1.5 )
+    step, fr = rec.recorder.steps[ -1 ], rec.recorder.frames[ -1 ]
+    assert step[ "removed" ] >= 1 and rec.ellipses.shape == ( rec.nb_points, 5 ) and np.isfinite( step[ "loss" ] )
+    assert len( rec.recorder.frames ) == n + 1 and len( fr[ "points" ] ) == fr[ "nb_points" ] == rec.nb_points and "matrices" in fr[ "drawing" ]
+
+
+if test( "remove_in_air: the balls a view sees in empty air go, those in the matter stay" ):
+    import numpy as np
+    from otrec import Reconstruction, Sinogram
+    g = np.stack( np.meshgrid( np.linspace( -0.3, 0.3, 7 ), np.linspace( -0.3, 0.3, 7 ) ), -1 ).reshape( -1, 2 )
+    s = Sinogram( 2, 36, 96, extent = 2.0 )
+    s.values = Reconstruction( s, g, radius = 0.06 ).image( sigma = 0.0, background = 0.0 )
+    rec = Reconstruction( s, np.concatenate( [ g, [ [ 0.6, 0.1 ], [ 0.45, 0.45 ] ] ] ), radius = 0.06, device = "cpu" )
+    rec.remove_in_air()
+    assert rec.nb_points == 49 and np.allclose( rec.points, g )

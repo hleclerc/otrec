@@ -26,3 +26,18 @@ if test( "3D: a ball; every view carries its mass, and so do its diracs, around 
     m = masses.sum( ( 1, 2 ) )
     assert np.allclose( np.einsum( "vij,i->v", masses, pos ) / m, uv[ :, 0 ], atol = 5e-3 )
     assert np.allclose( np.einsum( "vij,j->v", masses, pos ) / m, uv[ :, 1 ], atol = 5e-3 )
+
+
+if test( "matter_area: the area of a binary object from its filtered back projection; nominal_radius( area )" ):
+    import numpy as np
+    from otrec import Reconstruction, Sinogram
+    nx = 256
+    x = ( np.arange( nx ) + 0.5 ) / nx * 2 - 1
+    X, Y = np.meshgrid( x, x, indexing = "ij" )
+    image = ( ( ( X - 0.2 ) ** 2 + Y ** 2 < 0.3 ** 2 ) | ( ( np.abs( X + 0.4 ) < 0.05 ) & ( np.abs( Y ) < 0.5 ) ) ).astype( float )
+    area = image.mean() * 4
+    sino = Sinogram.from_image( image, 180, 256 )
+    assert abs( sino.matter_area( 256 ) - area ) < 0.05 * area, ( sino.matter_area( 256 ), area )
+    rec = Reconstruction( sino, np.zeros( ( 100, 2 ) ), radius = 0.1 )
+    r = rec.nominal_radius( area )
+    assert np.isclose( 100 * rec.model.unit * r * r, area )       # ( 100 balls of that radius, at the density of the matter )

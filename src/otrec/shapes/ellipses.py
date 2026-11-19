@@ -5,10 +5,11 @@ stands ( no constraint, every column a length ):
 
     x[ :, :2 ]    the centre
     x[ :, 2 ]     SIZE r0 log( s / r0 ): s the radius of the disc of the same area ( 0 is the radius `r0` )
-    x[ :, 3: ]    SHAPE r0 ( p, q ): M = s expm( S ), S = [ [ p, q ], [ q, -p ] ] -- a stretch of ratio exp( 2 |( p, q )| )
+    x[ :, 3:5 ]   SHAPE r0 ( p, q ): M = s expm( S ), S = [ [ p, q ], [ q, -p ] ] -- a stretch of ratio exp( 2 |( p, q )| )
                   that keeps the area; ( 0, 0 ) is the disc. The covariance is C = M M^T = s^2 expm( 2 S )
+    x[ :, 5 ]     ( optional, `x [ n, 6 ]` ) a density of its own, as for sized balls ( `sized.weights` )
 
-The mass of an ellipse is its area `pi s^2` ( one density at the centre for all; 1 in all ). Size and shape are apart
+The mass of an ellipse is its area `pi s^2` times its density ( 1 without the column; 1 in all ). Size and shape are apart
 because the loss is far stiffer along the first ( the mass of the shape moves with it ) than along the second ( an area
 that only changes its form ): at the end of the ball stages, a change of the area costs ~80 times more than a move of the
 centre of the same length, ~2000 times more than a stretch. With `( a, b, c )` mixing them, the scalar initial Hessian of
@@ -21,18 +22,24 @@ The kernels are those of `fused`; s stays in `[ r0 / max_ratio, r0 max_ratio ]`,
 inside the observable domain."""
 import torch
 
-from . import sized
+from . import fused, sized
 from .balls import inside
 
 SIZE = sized.SCALE
 SHAPE = 4.0
 
 
-def from_discs( centres, radii, model ):
-    """`x [ n, 5 ]`: the round ellipses of these discs ( tensors )"""
+def from_discs( centres, radii, model, densities = None ):
+    """`x [ n, 5 ]`: the round ellipses of these discs ( tensors ); `x [ n, 6 ]` with `densities`"""
     r0 = model.radius
     z = torch.zeros_like( radii )
-    return torch.cat( [ centres, torch.stack( [ SIZE * r0 * torch.log( radii / r0 ), z, z ], 1 ) ], 1 )
+    cols = [ SIZE * r0 * torch.log( radii / r0 ), z, z ] + ( [ ] if densities is None else [ sized.DENSITY * r0 * torch.log( densities ) ] )
+    return torch.cat( [ centres, torch.stack( cols, 1 ) ], 1 )
+
+
+def weights( x, model ):
+    """`[ n ]`: the density of each ellipse"""
+    return sized.weights( x, model, 5 )
 
 
 def _size_and_stretch( x, model ):
@@ -52,16 +59,38 @@ def _ch_sh( t2, f ):
     return ch, sh
 
 
+def project( x, model ):
+    """the rows brought back inside ( `lbfgs( project = )` ): the same shapes; the size and the density into their
+    bounds ( `sized.project` )"""
+    cols = [ shapes( x, model )[ 0 ].detach(), sized.bounded( x, model, 2, SIZE, model.max_ratio ), x[ :, 3:5 ] ]
+    if x.shape[ 1 ] > 5:
+        cols.append( sized.bounded( x, model, 5, sized.DENSITY, model.max_ratio ** 2 ) )
+    return torch.cat( cols, 1 )
+
+
 def shapes( x, model ):
     """`( centres [ n, 2 ], C [ n, 3 ] as ( c00, c11, c01 ), masses [ n ] )`: what the kernels take"""
     s, p, q, t2 = _size_and_stretch( x, model )
     ch, sh = _ch_sh( t2, 2.0 )
     s2 = s * s
     C = s2[ :, None ] * torch.stack( [ ch + sh * p, ch - sh * p, sh * q ], 1 )
-    return inside( x[ :, :2 ], torch.sqrt( C[ :, 0 ] + C[ :, 1 ] ), model.limit ), C, s2 / s2.sum()
+    m = s2 * weights( x, model )
+    return inside( x[ :, :2 ], torch.sqrt( C[ :, 0 ] + C[ :, 1 ] ), model.limit ), C, m / m.sum()
 
 
-deposit, gather = sized.deposit, sized.gather              # ( the kernels of sized balls are those of ellipses )
+def window( model ):
+    """`( min, max, k )`: the half-widths the kernels keep an ellipse in. Down to `r0 / max_ratio^2`: the size stays above
+    `r0 / max_ratio`, and an ellipse of the smallest size may then stretch by `max_ratio` before the kernels clamp its
+    width ( a clamp the derivative only sees from one side: L-BFGS stalls on it )"""
+    return ( model.radius / model.max_ratio ** 2, model.radius * model.max_ratio, model.k )
+
+
+def deposit( centres, C, masses, model ):
+    return fused.deposit_ellipses( centres, C, masses, *model.detector(), *window( model ) )
+
+
+def gather( centres, C, masses, model, d_cells ):
+    return fused.gather_ellipses( centres, C, masses, *model.detector(), *window( model ), d_cells )
 
 
 def discs( x, model ):

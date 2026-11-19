@@ -40,12 +40,13 @@ Each directory has its own docstring ( `__init__.py` ) that says what its files 
         viz.py               the outline of the object ( contours ), the colours of a page
         shapes/              balls, sized ( a radius each ), ellipses ( a covariance each ), polygons, mesh ( triangles between the contours of the balls ); their deposit on bins ( 1D, sdot kernels ) or nodes ( 2D ), blur
         transport/           W2^2 of one view: closed form ( 1D ), sdot's grid solver ( 2D )
-        loss/                the sum over the views and its gradient: Model, Loss1d ( any of the shapes ), Loss2d
+        loss/                the sum over the views and its gradient: Model, Loss1d ( any of the shapes ), Loss2d;
+                             fields: what the views ask of each ball ( move, dissonance, density asked )
         packing/             ball_packing: the image of a disc ( a cylinder ) minus balls settled by gravity
     experiments/             exp_2d.py, exp_3d.py: a packing reconstructed from a random start ( errand entries );
                              exp_2d.py::ellipses: balls, then ellipses ( centre + covariance ), the steps written out;
                              exp_2d_polygons.py: balls, then polygons; exp_2d_mesh.py: balls, then a mesh of their contours;
-                             exp_2d_real.py: measured scans of binary objects, from the simplest to the hardest
+                             exp_2d_real.py: measured scans, binary objects from the simplest to the hardest, and a pencil
     bench/                   eval.py: the time of one evaluation of the 2D loss
     tests/                   errand run --no-queue --env torch 'otrec/tests/test_X.py::*'    ( from ~/Projects, one file per call )
     attic/                   everything from before ( not imported )
@@ -170,8 +171,21 @@ scan = Scan.from_counts( projections, flats, darks, angles )      # -log( ( p - 
 scan = scan.centred( scan.rotation_axis(), radius = 800 )          # on the axis, the disk every view sees whole
 scan = scan.minus_air( 0.03 )                                     # the level of the air, view by view
 scan = scan.linearized()                                          # beam hardening: p + a p^2, equal masses
-sino = scan.clipped().sinogram( nb_bins = 512, nb_views = 800 )   # 360 folded onto 180, binned
+sino = scan.clipped().sinogram()                                 # 360 folded onto 180; a bin per pixel
 ```
+
+When the object is entirely in the field ( the pencil ), two steps replace `clipped`. `zeroed_air( 3.0 )` sets what is
+under 3 times the noise of the air to zero. Clipping alone keeps the positive half of the noise, a thin layer of matter
+over the whole disk that draws shapes into the air. `equal_masses()` gives every view the mean mass, since every view
+sees all the matter.
+
+Such an object also says where the axis is and how the sample moved. Its views have the same mass, and the centre of
+mass of view `t` follows `cor + a cos t + b sin t` ( consistency of the Radon transform at orders 0 and 1 ). `aligned()`
+fits that sinusoid and shifts each view onto it. On the pencil, the axis given with the data ( 1024.28 ) was 0.9 pixel
+off, and the sample moved by 1 pixel rms along the detector. Aligning lowers the loss above its floor by a third.
+`rings_removed()` takes off the bias of each pixel of the detector: what the mean view departs from a cubic over 9
+pixels. Phase contrast ( fringes at the interfaces, ID19 ) is not handled: a 1D Paganin filter gains little at 512 bins,
+and its length would have to be guessed without the distance and the delta/beta of the beam.
 
 A drift of the beam that scales a whole view needs no step, since the loss normalizes each view. The examples give the
 URL of their data. `cached_download( url )` keeps the file. `raw_rows( url, shape, row )` fetches only one row of each
@@ -180,7 +194,30 @@ image of a raw stack, by HTTP ranges, which turns 12 GB of projections into 10 M
 `experiments/exp_2d_real.py` covers binary objects ( matter or void ), from the simplest to the hardest. Its strategy is
 one function ( `solve` ), written step by step. The first case is a metal foam ( Diamond I12 ), static and entirely in
 the field, from the counts of the camera. Next comes sandstone ( SLS TOMCAT ), bigger than the field. Last is bamboo
-( ESRF ID19 ), bigger than the field and with the rings of the detector.
+( ESRF ID19 ), bigger than the field and with the rings of the detector. A pencil ( ESRF ID19 ) sits in the field
+but is not binary: it shows what the balls do with densities they cannot have.
+
+## What the views ask of each ball
+
+In each view, the 1D transport sends the mass of a ball somewhere: the view asks it to move by `delta` along its axis.
+The gradient sums these requests, and can vanish while the views disagree. `loss/fields.py` gives, per ball:
+
+* `move`: the 2D move that fits the requests best, in radii. It is 0 once a stage has converged;
+* `dissonance`: what remains of the requests after that move, in radii. These requests cancel out, so nothing moves,
+  but the ball is not where the views want it;
+* `density asked`: the mean of data / image over the cells the ball covers, minus 1. This is the change of density one EM
+  step would give it ( > 0: the views see more matter there than the balls put ).
+
+* `seen empty`: the fraction of the views that see the ball over air ( the data under it below 25 % of what it puts
+  there ). A ball outside the convex hull of the matter has such views, provided the air is at 0 ( `Scan.zeroed_air` ).
+  `Reconstruction.remove_in_air()` takes these balls off, and `remove_isolated()` takes off those with no neighbour.
+
+With a density each ( `adjust_parameters( densities = True )` ), a field `density` shows it.
+
+The frames of a `Recorder` keep them ( `Recorder( fields = True )`, the default; balls and sized balls, 2D ). The page
+colours the shapes by one of them, with a range over the displayed frame, over all of them, or typed. Its menu also
+shows or hides the layers: the outline of the truth, and the images given to `write_html( images = )` ( the FBP in
+`exp_2d_real.py` ).
 
 ## Speed ( 2D )
 
@@ -206,6 +243,11 @@ What it rests on:
 * L-BFGS on the device: scipy's cost as much as the loss at 1e6 shapes on the card;
 * no blur: from a uniform start in the right disk, stages at 16, 8, 4, 2, 1 pixels of blur leave the image error at 0.4
   after 200 iterations, where stages without blur reach 0.07 in 120.
+
+Shapes stay inside what every view sees. Beyond that border their centre is pulled back onto it, and gets no radial
+derivative there. L-BFGS therefore brings each point it tries back inside ( `lbfgs( project = )`, `kind.project` ),
+which leaves the loss unchanged. Without that, balls drawn at radius 0 and then given one, or pushed out during a stage,
+stayed on the border: 96 balls of 2000 on the pencil, with a loss of 0.37 instead of 0.003.
 
 The stop of a stage: the largest move of a shape is a poor signal ( a few shapes that cross a hole keep it up for
 hundreds of iterations after the image has settled: 750 iterations for the first stage at 250e3 shapes, where the

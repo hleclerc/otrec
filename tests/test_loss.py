@@ -170,3 +170,45 @@ if test( "2D ellipses: round ones are the balls they come from; the gradient mat
     x = x.cpu().numpy() + [ 0, 0, 0.01, 0.03, -0.02 ] * np.random.default_rng( 0 ).normal( size = x.shape )
     an, fd = finite_difference( on_arrays( rec, Loss1d( md, ellipses ) ), x, eps = 1e-6 )
     assert np.allclose( an, fd, rtol = 1e-4, atol = 1e-8 ), ( an, fd )
+
+
+if test( "fields: what each view asks of the balls adds up to the gradient" ):
+    import torch
+    from otrec.loss import fields
+    from otrec.shapes import balls
+    sino = Sinogram.from_image( ball_packing( nb = 128, seed = 0, gap = 0.025 ), 45, 64 )
+    rec = Reconstruction( sino, device = "cpu" )
+    rec.add_random_balls( 200, radius = 0.08 )
+    md = rec.model
+    x = md.tensor( rec.points )
+    centres = balls.shapes( x, md )[ 0 ]
+    radii, masses = torch.full_like( centres[ :, 0 ], md.radius ), torch.full_like( centres[ :, 0 ], 1 / len( centres ) )
+    d = torch.as_tensor( np.random.default_rng( 0 ).normal( size = ( sino.nb_views, md.N ) ) )
+    # with `d` as the derivative of a function of the cells, sum_v delta_v n_v gives back its gradient ( `gather` )
+    ones = torch.ones( sino.nb_views, dtype = d.dtype )
+    _, b, _, _, _ = fields.sums( md, centres, radii, masses, d, ones, torch.ones_like( d ), view_batch = 7 )
+    assert torch.allclose( -2 * masses[ :, None ] * b, balls.gather( centres, md, d )[ 0 ], rtol = 1e-10, atol = 1e-12 )
+    out = fields.per_ball( md, centres, radii, masses, d, ones, torch.ones_like( d ) )
+    assert out[ "density asked" ].abs().max() < 1e-12                            # ( data = image: nothing asked )
+    f = rec.fields()
+    assert set( f ) == { "move", "dissonance", "density asked", "seen empty" } and all( v.shape == ( 200, ) for v in f.values() )
+
+
+if test( "fields of ellipses: what each view asks adds up to the gradient of the centres" ):
+    import torch
+    from otrec.loss import Loss1d, fields
+    from otrec.shapes import ellipses
+    sino = Sinogram.from_image( ball_packing( nb = 128, seed = 0, gap = 0.025 ), 45, 64 )
+    rec = Reconstruction( sino, device = "cpu" )
+    rec.add_random_balls( 100, radius = 0.08 )
+    md = rec.model
+    x = ellipses.from_discs( md.tensor( rec.points ), md.tensor( rec.radii ), md )
+    x[ :, 3: ] = md.tensor( np.random.default_rng( 1 ).normal( scale = 0.02, size = ( 100, 2 ) ) )   # stretched
+    centres, C, masses = ellipses.shapes( x, md )
+    d = torch.as_tensor( np.random.default_rng( 0 ).normal( size = ( sino.nb_views, md.N ) ) )
+    widths = ellipses.window( md )[ :2 ]
+    _, b, _, _, _ = fields.sums( md, centres, ellipses.discs( x, md )[ 1 ], masses, d, torch.ones( sino.nb_views, dtype = d.dtype ),
+                              torch.ones_like( d ), covs = C, widths = widths )
+    grad = ellipses.gather( centres, C, masses, md, d )[ 0 ]
+    assert torch.allclose( -2 * masses[ :, None ] * b, grad, rtol = 1e-8, atol = 1e-12 )
+    assert set( Loss1d( md, ellipses ).fields( x, 0.0, 1e-3 ) ) == { "move", "dissonance", "density asked", "seen empty" }

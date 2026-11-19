@@ -34,6 +34,25 @@ def spacing( points, nb = 3 ):
     return float( cKDTree( points ).query( points, min( nb, len( points ) - 1 ) + 1 )[ 0 ][ :, 1: ].mean() )
 
 
+#: `first_peak^2` over the room of a point, 2D: 1.80 on a packing ( the cloud of a multiscale, against the area of the
+#: matter ), 1.76 on a foam ( against the area of its filtered back projection )
+PEAK_ROOM = 1.8
+
+
+def first_peak( points, k = 6, nb = 60 ):
+    """the distance between NEIGHBOURS: where the distances from each point to its `k` nearest ones are the most
+    frequent ( a histogram of `nb` bins on a log scale, smoothed over 5 ), the first peak of the distribution of the
+    distances between points. Coincident points are left out. On a cloud spread as the matter, the room of each point is
+    `first_peak^2 / PEAK_ROOM` ( 2D )"""
+    from scipy.spatial import cKDTree
+    d = cKDTree( points ).query( points, min( k, len( points ) - 1 ) + 1 )[ 0 ][ :, 1: ].ravel()
+    d = d[ d > 1e-12 * max( float( d.max() ), 1e-300 ) ]
+    edges = np.geomspace( np.quantile( d, 0.001 ), np.quantile( d, 0.999 ), nb + 1 )
+    h = np.convolve( np.histogram( d, edges )[ 0 ] / np.diff( np.log( edges ) ), np.ones( 5 ) / 5, mode = "same" )
+    i = int( np.argmax( h ) )
+    return float( np.sqrt( edges[ i ] * edges[ i + 1 ] ) )
+
+
 def sizes( n_start, n_end, division ):
     """the numbers of points of the stages of a multiscale: `n_end` at the end, each one the next divided by `division`
     ( rounded up ), from the one nearest to `n_start`"""

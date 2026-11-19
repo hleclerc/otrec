@@ -50,6 +50,18 @@ class Sinogram:
         out as the images of `from_image`: the usual reconstruction, for reference"""
         return filtered_backprojection( self.values, self.extent, self.axes[ :, 0, : ], nx or self.nb_bins )
 
+    def matter_area( self, nx = 512 ):
+        """2D, a BINARY object ( matter or void ): the area of the matter, where the filtered back projection on `nx^2`
+        pixels is above the threshold of Otsu ( the one that best splits its values in two classes )"""
+        v = self.fbp( nx ).ravel()
+        hist, edges = np.histogram( v, 256 )
+        c = 0.5 * ( edges[ 1: ] + edges[ :-1 ] )
+        w0 = np.cumsum( hist )
+        s0 = np.cumsum( hist * c )
+        m0, m1 = s0 / np.maximum( w0, 1 ), ( s0[ -1 ] - s0 ) / np.maximum( w0[ -1 ] - w0, 1 )
+        t = c[ np.argmax( w0 * ( w0[ -1 ] - w0 ) * ( m0 - m1 ) ** 2 ) ]
+        return float( ( v > t ).mean() ) * self.extent ** 2
+
     # -- geometry ----------------------------------------------------------------------------------------------------------
 
     def project( self, points ):

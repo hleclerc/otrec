@@ -1,7 +1,8 @@
 import torch
 
-from ..shapes import balls
+from ..shapes import balls, ellipses, sized
 from ..transport import w2_diracs_vs_bins
+from . import fields as _fields
 
 
 class Loss1d:
@@ -26,3 +27,29 @@ class Loss1d:
         loss = w2_diracs_vs_bins( self.diracs, md.data( sigma, background ), md.finish( mu, sigma, background ), md.origin, md.h ).sum()
         d_shapes = self.kind.gather( *frozen, md, torch.autograd.grad( loss, mu )[ 0 ] )
         return loss.item(), torch.autograd.grad( shapes, x, d_shapes )[ 0 ]
+
+    def fields( self, x, sigma, background ):
+        """`{ name: [ n ] }`: what the views ask of each shape ( `fields.per_ball` ), and its density when it has one,
+        numpy; balls, sized balls and ellipses ( `{ }` otherwise )"""
+        if self.kind not in ( balls, sized, ellipses ):
+            return { }
+        md = self.model
+        with torch.no_grad():
+            shapes = self.kind.shapes( x, md )
+            centres, radii = self.kind.discs( x, md )
+        mu = self.kind.deposit( *shapes, md ).requires_grad_( True )
+        image, data = md.finish( mu, sigma, background ), md.data( sigma, background )
+        d_cells = torch.autograd.grad( w2_diracs_vs_bins( self.diracs, data, image, md.origin, md.h ).sum(), mu )[ 0 ]
+        image = image.detach()
+        totals = image.sum( 1 )
+        ratio = ( data / data.sum( 1, keepdim = True ) ) / ( image / totals[ :, None ] )
+        masses = shapes[ 2 ] if self.kind is not balls else torch.full_like( radii, 1 / len( radii ) )
+        with torch.no_grad():
+            if self.kind is ellipses:
+                f = _fields.per_ball( md, centres, radii, masses, d_cells, totals, ratio, covs = shapes[ 1 ],
+                                      widths = ellipses.window( md )[ :2 ] )
+            else:
+                f = _fields.per_ball( md, centres, radii, masses, d_cells, totals, ratio )
+            if ( self.kind is sized and x.shape[ 1 ] > 3 ) or ( self.kind is ellipses and x.shape[ 1 ] > 5 ):
+                f[ "density" ] = self.kind.weights( x, md )            # ( its own, when the shapes have one each )
+        return { k: v.cpu().numpy() for k, v in f.items() }
