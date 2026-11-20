@@ -3,6 +3,10 @@ import numpy as np
 from errand import test
 
 from otrec import Reconstruction, Sinogram, ball_packing
+from otrec.shapes import fused
+
+# the derivatives checked here are those of the exact kernels: float32 ( `fused.PRECISION` ) has its own test, at the end
+fused.PRECISION = 0
 
 TRUTH = np.array( [ [ 0.30, 0.10 ], [ -0.25, 0.35 ], [ -0.10, -0.40 ], [ 0.45, -0.30 ] ] )
 
@@ -255,3 +259,27 @@ if test( "fields of ellipses: what each view asks adds up to the gradient of the
     grad = ellipses.gather( centres, C, masses, md, d )[ 0 ]
     assert torch.allclose( -2 * masses[ :, None ] * b, grad, rtol = 1e-8, atol = 1e-12 )
     assert set( Loss1d( md, ellipses ).fields( x, 0.0, 1e-3 ) ) == { "move", "dissonance", "density asked", "seen empty" }
+
+
+if test( "float32 in the kernels ( fused.PRECISION 1 .. 3 ): the loss and the gradient of the exact kernels, to their rounding" ):
+    from otrec.loss.Loss1d import Loss1d
+    from otrec.shapes import balls, sized
+    rng = np.random.default_rng( 0 )
+    s = Sinogram( 2, 48, 128, extent = 2.0 )
+    s.values = Reconstruction( s, TRUTH, radius = 0.12 ).image( sigma = 0.0, background = 0.0 )
+    rec = Reconstruction( s )
+    rec.add_random_balls( 2000, radius = 0.02 )
+    md = rec.model
+    x = md.tensor( rec.points )
+    xs = sized.pack( x, md.tensor( 0.02 * np.exp( 0.3 * rng.normal( size = len( x ) ) ) ), 0.02 )
+    ref = { }
+    for P, tol in ( ( 0, 0 ), ( 1, 1e-6 ), ( 2, 1e-6 ), ( 3, 1e-4 ) ):
+        fused.PRECISION = P
+        for kind, y in ( ( balls, x ), ( sized, xs ) ):
+            f, g = Loss1d( md, kind ).value_and_grad( y, 0.0, 1e-3 )
+            if P == 0:
+                ref[ kind ] = f, g
+                continue
+            assert abs( f / ref[ kind ][ 0 ] - 1 ) < tol, ( P, kind, f, ref[ kind ][ 0 ] )
+            assert float( ( g - ref[ kind ][ 1 ] ).norm() / ref[ kind ][ 1 ].norm() ) < tol, ( P, kind )
+    fused.PRECISION = 0

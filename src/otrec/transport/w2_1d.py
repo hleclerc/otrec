@@ -26,13 +26,18 @@ def w2_diracs_vs_bins( y, b, v, origin, h ):
     # the breakpoints, by BIN then by position, each edge before the quantiles of its bin. A piece takes the bin of the
     # point it starts at, and the dirac after the quantiles before it: read from that order, never from positions. A
     # quantile sits ON an edge wherever both cumulated masses agree ( a uniform background, one dirac per bin ): a test on
-    # positions ( or an unstable sort, as torch's on the CPU ) then gives the piece that ends at q_i the density of bin
-    # j - 1, while q_i moves with the density of bin j -- the loss right, its gradient wrong ( 1e-4 relative )
+    # positions then gives the piece that ends at q_i the density of bin j - 1, while q_i moves with the density of bin
+    # j -- the loss right, its gradient wrong ( 1e-4 relative ).
+    # That order is a MERGE of two sorted lists ( the edges; the quantiles, `j` non decreasing ), known without sorting:
+    # before the edge k, the k edges and the quantiles of the bins before k; before the quantile i, the edges 0 .. j_i
+    # and the quantiles before it
     allp = torch.cat( [ edges.expand( V, -1 ), q ], 1 )
     bins = torch.cat( [ torch.arange( N + 1, device = v.device ).expand( V, -1 ), j ], 1 )
     is_q = torch.cat( [ torch.zeros_like( bins[ :, :N + 1 ] ), torch.ones_like( j ) ], 1 )
-    o = torch.sort( allp.detach(), dim = 1, stable = True ).indices
-    o = o.gather( 1, torch.sort( bins.gather( 1, o ), dim = 1, stable = True ).indices )
+    k = torch.arange( N + 1, device = v.device ).expand( V, -1 ).contiguous()
+    rank = torch.cat( [ k + torch.searchsorted( j.contiguous(), k ),                          # ( the quantiles with j < k )
+                        j + 1 + torch.arange( M - 1, device = v.device ) ], 1 )
+    o = torch.empty_like( rank ).scatter_( 1, rank, torch.arange( N + M, device = v.device ).expand( V, -1 ) )
     pts = allp.gather( 1, o )
     lo, hi = pts[ :, :-1 ], pts[ :, 1: ]
     jm = bins.gather( 1, o )[ :, :-1 ].clamp( max = N - 1 )                                  # the bin of each piece

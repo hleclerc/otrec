@@ -21,37 +21,85 @@ def _record( rec, step, **info ):
                        loss = loss, **info )
 
 
-def relax_spacing( rec, iterations = 2, reach = 1.5, samples = 128, smallest_only = True ):
+def relax_spacing( rec, iterations = 2, reach = 1.5, samples = 128, smallest_only = True, memory = 2e7 ):
     """`iterations` steps of Lloyd restricted to the union of the discs of radius `reach r` around the balls ( `r` the
     radius of each ): each ball to the centroid of the samples of its power cell ( weight r^2: balls of several sizes )
     ( `samples` per ball, evenly spread in its disc: a sunflower ). `smallest_only`: only the balls of the smallest
-    radius move, the others are sites that stay ( Lloyd among balls of several sizes takes the fit apart )"""
+    radius move, the others are sites that stay ( Lloyd among balls of several sizes takes the fit apart ).
+    On the device of the model ( torch ): a sample of ball i ( within reach r_i of it ) can only belong to a ball j with
+    |x - p_j|^2 - r_j^2 <= |x - p_i|^2 - r_i^2, so within reach r_i + sqrt( ( reach^2 - 1 ) r_i^2 + r_max^2 ) of p_i: the
+    candidates of each ball are its k nearest, k the number of balls that disc holds ( a cKDTree at each step ); the
+    balls by chunks of those that need as many, `memory` power distances at a time"""
+    import torch
     from scipy.spatial import cKDTree
-    t0, r = time.perf_counter(), rec.radii
-    P = rec.points.copy()
-    n = len( P )
-    k = np.arange( samples ) + 0.5                                              # a sunflower: the same even samples for every ball
+    t0, md = time.perf_counter(), rec.model
+    T = md.tensor
+    r = T( rec.radii )
+    n = len( r )
+    k = torch.arange( samples, dtype = r.dtype, device = r.device ) + 0.5          # a sunflower: the same even samples for every ball
     th = math.pi * ( 3 - math.sqrt( 5 ) ) * k
-    off = ( reach * r )[ :, None, None ] * ( np.sqrt( k / samples )[ :, None ] * np.stack( [ np.cos( th ), np.sin( th ) ], 1 ) )[ None ]
+    unit_off = torch.sqrt( k / samples )[ :, None ] * torch.stack( [ torch.cos( th ), torch.sin( th ) ], 1 )      # [ S, 2 ]
+    rn = rec.radii
+    bound = reach * rn + np.sqrt( np.maximum( reach ** 2 - 1, 0 ) * rn ** 2 + rn.max() ** 2 )
+    w = r * r
+    moves = T( np.ones( n ) ) if not smallest_only else ( r <= r.min() * ( 1 + 1e-9 ) ).to( r.dtype )
+    P = T( rec.points )
     move0 = None
     for _ in range( iterations ):
+        Pn = P.cpu().numpy()
+        tree = cKDTree( Pn )
+        need = tree.query_ball_point( Pn, bound, return_length = True )             # ( itself included )
+        order = np.argsort( need, kind = "stable" )
+        need_s = np.minimum( need[ order ], n )
+        sx = torch.zeros( n, dtype = r.dtype, device = r.device ); sy = torch.zeros_like( sx ); cnt = torch.zeros_like( sx )
+        c0 = 0
+        while c0 < n:                                                               # chunks of balls that need as many candidates:
+            ends = np.arange( c0 + 1, n + 1 )                                       # the longest within `memory` power distances
+            fits = ( ends - c0 ) * samples * need_s[ ends - 1 ] <= memory
+            c1 = int( ends[ fits ].max() ) if fits.any() else c0 + 1
+            k_c = int( need_s[ c1 - 1 ] )
+            idx = order[ c0:c1 ]
+            cj = torch.as_tensor( tree.query( Pn[ idx ], k_c )[ 1 ], device = r.device ).reshape( len( idx ), k_c )   # [ B, k ], itself first
+            it = torch.as_tensor( idx, device = r.device )
+            S = P[ it, None, : ] + reach * r[ it, None, None ] * unit_off[ None ]                       # [ B, S, 2 ]
+            d = ( ( S[ :, :, None, : ] - P[ cj ][ :, None, :, : ] ) ** 2 ).sum( -1 ) - w[ cj ][ :, None, : ]    # [ B, S, k ]: power distances
+            j = cj.gather( 1, d.argmin( -1 ) )                                                       # [ B, S ]: the owner of each sample
+            ok = ( ( S - P[ j ] ) ** 2 ).sum( -1 ) < ( reach * r[ j ] ) ** 2
+            jj = j[ ok ]
+            sx.index_add_( 0, jj, S[ ..., 0 ][ ok ] ); sy.index_add_( 0, jj, S[ ..., 1 ][ ok ] ); cnt.index_add_( 0, jj, torch.ones_like( jj, dtype = r.dtype ) )
+            c0 = c1
+        cen = torch.stack( [ sx, sy ], 1 ) / cnt.clamp( min = 1 )[ :, None ]
+        new = torch.where( ( ( cnt > 0 ) & ( moves > 0 ) )[ :, None ], cen, P )
+        if move0 is None:
+            move0 = float( ( torch.linalg.vector_norm( new - P, dim = 1 ) / r ).mean() )
+        P = new
+    rec._set( rec._inside( P.cpu().numpy() ), rec.radii, rec.densities )
+    _record( rec, "relax_spacing", iterations = iterations, reach = reach, mean_move = move0, seconds = time.perf_counter() - t0 )
+    return rec
+
+
+def relax_spacing_ckdtree( P, r, iterations = 2, reach = 1.5, samples = 128, smallest_only = True ):
+    """the same steps on the CPU, every sample against every ball ( a cKDTree in 3D: the power distance ), for checks:
+    the new points"""
+    from scipy.spatial import cKDTree
+    P = P.copy()
+    n = len( P )
+    k = np.arange( samples ) + 0.5
+    th = math.pi * ( 3 - math.sqrt( 5 ) ) * k
+    off = ( reach * r )[ :, None, None ] * ( np.sqrt( k / samples )[ :, None ] * np.stack( [ np.cos( th ), np.sin( th ) ], 1 ) )[ None ]
+    for _ in range( iterations ):
         S = ( P[ :, None, : ] + off ).reshape( -1, 2 )
-        # the POWER cells ( weights r^2: a big ball keeps its share among small ones ): |x - p|^2 - r^2, the distance
-        # in 3D to ( p, sqrt( M - r^2 ) ) less M, for the samples at height 0
         M = float( ( r ** 2 ).max() )
         lift = np.concatenate( [ P, np.sqrt( M - r ** 2 )[ :, None ] ], 1 )
         _, j = cKDTree( lift ).query( np.concatenate( [ S, np.zeros( ( len( S ), 1 ) ) ], 1 ), workers = -1 )
         ok = np.linalg.norm( S - P[ j ], axis = 1 ) < reach * r[ j ]
         cnt = np.bincount( j[ ok ], minlength = n )
-        c = np.stack( [ np.bincount( j[ ok ], S[ ok, k ], n ) for k in ( 0, 1 ) ], 1 )
+        c = np.stack( [ np.bincount( j[ ok ], S[ ok, q ], n ) for q in ( 0, 1 ) ], 1 )
         new = np.where( cnt[ :, None ] > 0, c / np.maximum( cnt, 1 )[ :, None ], P )
         if smallest_only:
             new = np.where( ( r <= r.min() * ( 1 + 1e-9 ) )[ :, None ], new, P )
-        move0 = np.mean( np.linalg.norm( new - P, axis = 1 ) / r ) if move0 is None else move0
         P = new
-    rec._set( rec._inside( P ), r, rec.densities )
-    _record( rec, "relax_spacing", iterations = iterations, reach = reach, mean_move = float( move0 ), seconds = time.perf_counter() - t0 )
-    return rec
+    return P
 
 
 def matter_mask( rec, area, nb = 1024, level = 0.5, smooth = 1.0 ):

@@ -39,9 +39,12 @@ def setup( p ):
     """`( image, sino, rec )`: the lung at 2 pixels per bin, its sinogram, a `Reconstruction` of it with its recorder
     ( `p`: views, bins, noise, seed, device, n, record_every, out_dir; the entry's name in the title )"""
     from otrec import Reconstruction
+    from otrec.shapes import fused
+    fused.PRECISION = getattr( p, "precision", fused.PRECISION )
     image = truth( 2 * p.bins )
     sino = sinogram( image, p.views, p.bins, p.noise, p.seed )
-    rec = Reconstruction( sino, device = None if p.device == "default" else p.device, max_ratio = getattr( p, "max_ratio", 4.0 ) )
+    rec = Reconstruction( sino, device = None if p.device == "default" else p.device, max_ratio = getattr( p, "max_ratio", 4.0 ),
+                          fused = bool( getattr( p, "fused", 0 ) ) )
     rec.recorder = recorder( rec, image, p.out_dir, f"otrec 2D -- a lung, { p.n } shapes", p.record_every )
     rec.rng = np.random.default_rng( p.seed )
     return image, sino, rec
@@ -53,7 +56,8 @@ def summary( rec, image, t0 ):
     st = rec.recorder.stages
     radii = f"radius { rec.radius:.4g}" if np.all( rec.radii == rec.radius ) else f"radii { rec.radii.min():.4g} - { rec.radii.max():.4g}"
     print( f"{ rec.nb_points } balls, { radii }, gap to the truth { gap( rec, image )( rec.points, rec.radii ):.3f},"
-           f" loss / floor { st[ -1 ][ 'loss' ] / rec.loss_fn.floor:.4f}, { sum( s[ 'nb_iter' ] for s in st ) } iterations, { time.time() - t0:.0f} s" )
+           f" loss / floor { st[ -1 ][ 'loss' ] / rec.loss_fn.floor:.4f}, { sum( s[ 'nb_iter' ] for s in st ) } iterations, { time.time() - t0:.0f} s,"
+           f" stops { [ s.get( 'stop' ) for s in st ] }" )
 
 
 def recorder( rec, image, out_dir, title, every = 20 ):

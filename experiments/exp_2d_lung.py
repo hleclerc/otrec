@@ -23,7 +23,9 @@ PARAMS = dict(
     views = Param( 768 ), bins = Param( 512 ),
     x_tol = Param( 0.1, help = "a stage stops when the shapes move less than that fraction of their radius in 10 iterations" ),
     noise = Param( 0.0, help = "gaussian noise on the sinogram, its deviation in fraction of the mean of a bin" ),
-    record_every = Param( 20 ), seed = Param( 0 ), device = Param( "default", help = "cpu, cuda, or loom's default" ) )
+    record_every = Param( 20 ), seed = Param( 0 ), device = Param( "default", help = "cpu, cuda, or loom's default" ),
+    precision = Param( 2, help = "what the kernels compute in float32: 0 nothing, 1 the profile, 2 the sums too, 3 the projections too ( `shapes.fused` )" ),
+    fused = Param( 0, help = "1: the loss of balls of one radius in one kernel ( deposit, transport, gather: `loss.LossFused` )" ) )
 
 
 def imports():

@@ -11,6 +11,10 @@ from .Loss2d import Loss2d as Loss2d
 from .Model import Model as Model
 
 
-def make_loss( model ):
-    """the loss of the dimension of the sinogram: `.value_and_grad( x, sigma, background )`, `x` the centres of the balls, on tensors"""
+def make_loss( model, fused = False ):
+    """the loss of the dimension of the sinogram: `.value_and_grad( x, sigma, background )`, `x` the centres of the balls, on
+    tensors. `fused` ( world 2D ): the deposit, the transport and the gather in one kernel ( `LossFused` )"""
+    if model.sinogram.dim == 2 and fused:
+        from .LossFused import LossFused
+        return LossFused( model )
     return Loss1d( model ) if model.sinogram.dim == 2 else Loss2d( model )

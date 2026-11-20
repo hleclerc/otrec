@@ -45,13 +45,14 @@ class Reconstruction:
     `max_ratio` of the radius. `background`: both measures are lifted by that fraction of their mean. `recorder`: keeps the
     history ( `Recorder()` by default: the steps and the losses, no frames ). Random draws take `rng` ( seeded with 0 ).
     `outer` ( world 2D ): the radius where the shapes may be, beyond the field ( 1 for the sinogram of a `Scan` ), for an
-    object bigger than it: only the window of the detector is compared ( `loss.Model` )"""
+    object bigger than it: only the window of the detector is compared ( `loss.Model` ). `fused`: the stages of balls of one
+    radius evaluate the loss in one kernel ( `loss.LossFused`: the deposit, the transport and the gather together )"""
 
     def __init__( self, sinogram, points = None, *, radius = None, k = 2, n_per_pixel = 1, background = 1e-3, view_batch = 8,
-                  device = None, max_ratio = 4.0, outer = None, recorder = None ):
+                  device = None, max_ratio = 4.0, outer = None, recorder = None, fused = False ):
         self.sinogram, self.dim = sinogram, sinogram.dim
         self.model = Model( sinogram, radius, k, n_per_pixel, view_batch, device, max_ratio, outer )
-        self.loss_fn = make_loss( self.model )
+        self.loss_fn, self.fused = make_loss( self.model, fused ), bool( fused )
         self.background = float( background )
         self.recorder = Recorder() if recorder is None else recorder
         self.recorder.dim, self.recorder.floor = self.dim, self.loss_fn.floor
@@ -211,6 +212,13 @@ class Reconstruction:
 
     # -- the steps ---------------------------------------------------------------------------------------------------------
 
+    def _sized_loss( self, grads ):
+        """the loss of sized balls: fused when asked ( `grads`: the radii or densities move )"""
+        if self.fused and self.dim == 2:
+            from .loss.LossFused import LossFusedSized
+            return LossFusedSized( self.model, grads )
+        return Loss1d( self.model, sized )
+
     def _sized( self, densities = False ):
         """the rows of sized balls; with a density column when the cloud has densities, or when `densities`"""
         T = self.model.tensor
@@ -292,7 +300,7 @@ class Reconstruction:
                or ( radii == "keep" and self.densities is not None ) ):
             x = self._sized( densities )
             fixed = keep( ( 0, centers ), ( 1, centers ), ( 2, radii is True ) ) + ( keep( ( 3, densities ) ) if x.shape[ 1 ] > 3 else [ ] )
-            self._stage( "adjust_parameters", info, Loss1d( md, sized ), x, sigma, background, x_tol, max_iter, fixed, callback, f_tol )
+            self._stage( "adjust_parameters", info, self._sized_loss( radii is True or bool( densities ) ), x, sigma, background, x_tol, max_iter, fixed, callback, f_tol )
         else:
             self._set( self.points )                                   # ( whatever the shapes were: balls of one radius )
             self._stage( "adjust_parameters", info, self.loss_fn, md.tensor( self.points ), sigma, background, x_tol, max_iter, ( ), callback, f_tol )
