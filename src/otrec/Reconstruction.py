@@ -43,12 +43,14 @@ from .shapes import balls, ellipses, polygons, sized
 class Reconstruction:
     """`points`, `radius`: a cloud to start from ( or `add_random_balls` ). Polygons and sized balls stay within
     `max_ratio` of the radius. `background`: both measures are lifted by that fraction of their mean. `recorder`: keeps the
-    history ( `Recorder()` by default: the steps and the losses, no frames ). Random draws take `rng` ( seeded with 0 )."""
+    history ( `Recorder()` by default: the steps and the losses, no frames ). Random draws take `rng` ( seeded with 0 ).
+    `outer` ( world 2D ): the radius where the shapes may be, beyond the field ( 1 for the sinogram of a `Scan` ), for an
+    object bigger than it: only the window of the detector is compared ( `loss.Model` )"""
 
     def __init__( self, sinogram, points = None, *, radius = None, k = 2, n_per_pixel = 1, background = 1e-3, view_batch = 8,
-                  device = None, max_ratio = 4.0, recorder = None ):
+                  device = None, max_ratio = 4.0, outer = None, recorder = None ):
         self.sinogram, self.dim = sinogram, sinogram.dim
-        self.model = Model( sinogram, radius, k, n_per_pixel, view_batch, device, max_ratio )
+        self.model = Model( sinogram, radius, k, n_per_pixel, view_batch, device, max_ratio, outer )
         self.loss_fn = make_loss( self.model )
         self.background = float( background )
         self.recorder = Recorder() if recorder is None else recorder
@@ -161,10 +163,15 @@ class Reconstruction:
         matter is given ( `Sinogram.matter_area`, a binary object ), else from the distance between neighbours
         ( `cloud.first_peak`, `PEAK_ROOM` ). The cloud must be spread as the matter: balls smaller than the details of the
         object do that ( they place themselves as diracs would ); balls bigger than a strut line up along it, closer than
-        the room they stand for, and stack. ( 2D: checked on packings and on a foam; 3D: the same formula, not calibrated. )"""
+        the room they stand for, and stack. ( 2D: checked on packings and on a foam; 3D: the same formula, not calibrated. )
+        With shapes around the field ( `outer` ), the distances are read on the balls of the field only: those around it,
+        seen by some views only, are smeared along the circles and give a radius 20 to 35 % too large"""
         if area is not None:
             return ( area / self.nb_points / self.model.unit ) ** ( 1 / self.dim )
-        return ( cloud.first_peak( self.points ) ** self.dim / cloud.PEAK_ROOM / self.model.unit ) ** ( 1 / self.dim )
+        points = self.points
+        if self.model.pad:
+            points = points[ np.linalg.norm( points, axis = 1 ) < 0.9 * self.sinogram.extent / 2 ]
+        return ( cloud.first_peak( points ) ** self.dim / cloud.PEAK_ROOM / self.model.unit ) ** ( 1 / self.dim )
 
     # -- the loss ----------------------------------------------------------------------------------------------------------
 
@@ -210,15 +217,18 @@ class Reconstruction:
         d = self.densities if self.densities is not None else ( np.ones( self.nb_points ) if densities else None )
         return sized.pack( T( self.points ), T( self.radii ), self.radius, None if d is None else T( d ) )
 
-    def _stage( self, step, info, loss_fn, x, sigma, background, x_tol, max_iter, fixed = ( ), callback = None ):
-        """L-BFGS on `x`, the rows of a kind of shapes ( `loss_fn.kind` ), its columns `fixed` kept; sets the cloud from
-        the result ( with the densities when the rows have them ), and returns it"""
-        fixed = list( fixed )
+    def _stage( self, step, info, loss_fn, x, sigma, background, x_tol, max_iter, fixed = ( ), callback = None, f_tol = None ):
+        """L-BFGS on `x`, the rows of a kind of shapes ( `loss_fn.kind` ), its columns `fixed` kept ( or, a boolean mask
+        `[ n, columns ]`, those of its entries ); sets the cloud from the result ( with the densities when the rows have
+        them ), and returns it"""
+        fixed = fixed if torch.is_tensor( fixed ) else list( fixed )
         t0, rc, md = time.perf_counter(), self.recorder, self.model
         bg = self.background if background is None else float( background )
         def fun( x ):
             f, g = loss_fn.value_and_grad( x, self._pixels( sigma ), bg )
-            if fixed:
+            if torch.is_tensor( fixed ):
+                g[ fixed ] = 0
+            elif fixed:
                 g[ :, fixed ] = 0
             return f, g
         kind = getattr( loss_fn, "kind", balls )
@@ -233,7 +243,8 @@ class Reconstruction:
         loss0 = fun( x )[ 0 ]
         rc.begin_stage( step, dict( info, sigma = float( sigma ), x_tol = x_tol, nb_points = self.nb_points, radius = self.radius ), lambda: snapshot( x ), loss0 )
         project = ( lambda x: kind.project( x, md ) ) if hasattr( kind, "project" ) else None
-        x, loss, nb_iter, nb_eval, stop = lbfgs( fun, x, x_tol * self.radius, max_iter, callback = each, project = project )
+        x, loss, nb_iter, nb_eval, stop = lbfgs( fun, x, x_tol * self.radius, max_iter, callback = each, project = project,
+                                                 f_tol = f_tol, f_floor = self.loss_fn.floor if sigma == 0 else 0.0 )
         with torch.no_grad():
             dens = kind.weights( x, md ).cpu().numpy() if hasattr( kind, "weights" ) else None
         self._set( *cloud_of( x ), None if dens is None or ( dens == 1 ).all() else dens )
@@ -241,11 +252,13 @@ class Reconstruction:
         return x
 
     def adjust_parameters( self, centers = False, radii = False, cov_matrices = False, densities = False, x_tol = 0.1, max_iter = 2000, sigma = 0.0,
-                           background = None, callback = None ):
+                           background = None, callback = None, f_tol = None ):
         """a STAGE: L-BFGS on what is asked ( nothing moves unless it is said ), from the current cloud, at the blur `sigma`:
 
             centers         the centres
-            radii           a radius each ( world 2D, `shapes.sized`; the mass follows the radius )
+            radii           a radius each ( world 2D, `shapes.sized`; the mass follows the radius ). "keep": the radii of
+                            the cloud as they are ( one each, fixed: balls of several sizes whose centres move; balls of
+                            one radius when they all have `self.radius` )
             cov_matrices    a covariance each ( world 2D, `shapes.ellipses`: the profile of the balls, stretched; the mass
                             follows the area ). Round at the start, or the ellipses of the last stage. The result is
                             `self.ellipses [ n, 5 ]`; `points` and `radii` then describe the discs of the same areas
@@ -254,7 +267,9 @@ class Reconstruction:
                             cloud has densities, the stages of sized balls and ellipses keep them, fixed unless asked
 
         None of `radii`, `cov_matrices`, `densities`: balls of ONE radius, `self.radius`, and one density ( the
-        densities are forgotten ). `callback( x, loss )` after each iteration, `x` the rows of the shapes."""
+        densities are forgotten ). `callback( x, loss )` after each iteration, `x` the rows of the shapes. The stage stops
+        when the shapes no longer move ( `x_tol` ), or, with `f_tol`, when the loss no longer goes down ( by less than
+        `f_tol` times what is left of it above its floor, over 10 iterations: `lbfgs`, "flat" )."""
         md, info = self.model, dict( centers = centers, radii = radii, cov_matrices = cov_matrices, densities = densities )
         if not ( centers or radii or cov_matrices or densities ):
             raise ValueError( "adjust_parameters: say what moves ( centers, radii, cov_matrices, densities )" )
@@ -271,15 +286,16 @@ class Reconstruction:
             else:
                 x = ellipses.from_discs( T( self.points ), T( self.radii ), md, None if dens is None else T( dens ) )
             fixed = keep( ( 0, centers ), ( 1, centers ) ) + ( keep( ( 5, densities ) ) if x.shape[ 1 ] > 5 else [ ] )
-            x = self._stage( "adjust_parameters", info, Loss1d( md, ellipses ), x, sigma, background, x_tol, max_iter, fixed, callback )
+            x = self._stage( "adjust_parameters", info, Loss1d( md, ellipses ), x, sigma, background, x_tol, max_iter, fixed, callback, f_tol )
             self.ellipses = x.cpu().numpy()[ :, :5 ]                    # ( the densities: `self.densities` )
-        elif radii or densities:
+        elif ( radii is True or densities or ( radii == "keep" and not np.all( self.radii == self.radius ) )
+               or ( radii == "keep" and self.densities is not None ) ):
             x = self._sized( densities )
-            fixed = keep( ( 0, centers ), ( 1, centers ), ( 2, radii ) ) + ( keep( ( 3, densities ) ) if x.shape[ 1 ] > 3 else [ ] )
-            self._stage( "adjust_parameters", info, Loss1d( md, sized ), x, sigma, background, x_tol, max_iter, fixed, callback )
+            fixed = keep( ( 0, centers ), ( 1, centers ), ( 2, radii is True ) ) + ( keep( ( 3, densities ) ) if x.shape[ 1 ] > 3 else [ ] )
+            self._stage( "adjust_parameters", info, Loss1d( md, sized ), x, sigma, background, x_tol, max_iter, fixed, callback, f_tol )
         else:
             self._set( self.points )                                   # ( whatever the shapes were: balls of one radius )
-            self._stage( "adjust_parameters", info, self.loss_fn, md.tensor( self.points ), sigma, background, x_tol, max_iter, ( ), callback )
+            self._stage( "adjust_parameters", info, self.loss_fn, md.tensor( self.points ), sigma, background, x_tol, max_iter, ( ), callback, f_tol )
         return self
 
     def fit_polygons( self, nb_vertices = 8, x_tol = 0.001, max_iter = 2000, callback = None ):

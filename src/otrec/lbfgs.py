@@ -4,7 +4,8 @@ import math
 import torch
 
 
-def lbfgs( value_and_grad, x, move_tol, max_iter = 1000, window = 10, quantile = 0.999, history = 10, callback = None, project = None ):
+def lbfgs( value_and_grad, x, move_tol, max_iter = 1000, window = 10, quantile = 0.999, history = 10, callback = None, project = None,
+           f_tol = None, f_floor = 0.0 ):
     """minimizes `value_and_grad( x ) -> ( float, tensor )` from the tensor `x [ n, dim ]`, until the rows of `x` have moved
     by less than `move_tol` over the last `window` iterations ( a net move: one iteration alone says little, its step may
     be short ) -- all but the `1 - quantile` that moved the most: a few rows on a long way would hold the stop for
@@ -12,7 +13,10 @@ def lbfgs( value_and_grad, x, move_tol, max_iter = 1000, window = 10, quantile =
     is brought back into a domain where the function only depends on it ( the rows that leave it have no derivative
     towards it otherwise ); its value must not change. The gradient of a row on its border then loses what would take it
     out ( an active set: the directions stay ones that can lower the function ).
+    `f_tol`: also stop when the function no longer goes down: over the last `window` iterations, by less than `f_tol`
+    times what is left of it above `f_floor` ( what it cannot go under ).
     Returns `( x, f, number of iterations, number of evaluations, why it stopped )`: "still" ( the rows no longer move ),
+    "flat" ( `f_tol`: the function no longer goes down ),
     "stalled" ( no step along the gradient lowers the function any more: its noise is reached ) or "max_iter"."""
     def active( x, g ):
         """`g` without, on each row on the border, the part along which a descent would leave the domain"""
@@ -28,6 +32,7 @@ def lbfgs( value_and_grad, x, move_tol, max_iter = 1000, window = 10, quantile =
     f, g = value_and_grad( x )
     g = active( x, g )
     pairs, nb_eval, it, x_ref, stop = [ ], 1, 0, x, "max_iter"       # pairs: ( s, y, 1 / s.y ), the oldest first
+    f_ref = f
     while it < max_iter:
         # the direction: -H g, H the inverse Hessian the pairs describe ( scaled by s.y / y.y of the last one )
         d, alphas = -g, [ ]
@@ -74,5 +79,8 @@ def lbfgs( value_and_grad, x, move_tol, max_iter = 1000, window = 10, quantile =
             if it > window and moves.kthvalue( math.ceil( quantile * len( moves ) ) ).values.item() <= move_tol:
                 stop = "still"
                 break
-            x_ref = x
+            if f_tol is not None and it > window and f_ref - f <= f_tol * max( f - f_floor, 0.0 ):
+                stop = "flat"
+                break
+            x_ref, f_ref = x, f
     return x, f, it, nb_eval, stop

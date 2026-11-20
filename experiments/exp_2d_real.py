@@ -21,7 +21,8 @@ def solve( rec, p ):
     whatever its shape ); then a stage at the radius where they fill the matter, and, `p.nb_splits` times, each ball
     split in 4 and the centres fitted again. Binary: the radius from the distance between neighbours ( the first peak
     of their distances: `nominal_radius` )"""
-    rec.add_random_balls( p.n // 4 ** p.nb_splits, radius = rec.sinogram.h )
+    n = round( p.n * ( rec.model.limit / ( rec.sinogram.extent / 2 ) ) ** 2 )     # ( `p.n` in the field, as many around it )
+    rec.add_random_balls( n // 4 ** p.nb_splits, radius = rec.sinogram.h )
     rec.adjust_parameters( centers = True, x_tol = p.x_tol )
     for split in range( p.nb_splits + 1 ):
         rec.radius = rec.nominal_radius()
@@ -48,6 +49,17 @@ PARAMS = dict(
     reduction = Param( 1, help = "the sinogram that many times coarser in pixels and in views: 1, the data as they are; 4, to try things fast" ),
     x_tol = Param( 0.1, help = "a stage stops when the shapes move less than that fraction of their radius" )
 )
+# for matter BIGGER THAN THE FIELD
+OUTER = Param( 1.2, help = "the radius where the shapes may be, in radii of the field; 1: only in it" )
+
+
+def beyond_the_field( scan, outer ):
+    """matter bigger than the field. What the matter beyond `outer` adds to the views is estimated and taken off
+    ( `Scan.outside_removed` ); between the field and `outer`, the closest matter, which that estimate guesses the worst,
+    is left to the shapes, compared on the window of the detector only ( `Reconstruction( outer = )` ). With `outer = 1`,
+    all the matter around the field taken off, and the views made consistent ( `Scan.moments_matched` )"""
+    scan = scan.outside_removed( radius = outer )
+    return scan.moments_matched() if outer <= 1 else scan
 
 
 if p := experiment( "foam", row = Param( 500, help = "of the detector: the slice" ),
@@ -120,7 +132,7 @@ if p := experiment( "pencil", **PARAMS ):
 
 
 if p := experiment( "sandstone", slice = Param( 540, help = "270, 540, 810 or 1080" ),
-                    paganin = Param( 10.0, help = "the filter of the phase contrast, in pixels^2 ( 0: none )" ), **PARAMS ):
+                    paganin = Param( 10.0, help = "the filter of the phase contrast, in pixels^2 ( 0: none )" ), outer = OUTER, **PARAMS ):
     import zipfile
     import numpy as np
     import scipy.io
@@ -139,16 +151,16 @@ if p := experiment( "sandstone", slice = Param( 540, help = "270, 540, 810 or 10
     if p.paganin:
         scan = scan.phase_retrieved( p.paganin )                              # the fringes on the edges of the grains
     scan = scan.centred( scan.rotation_axis() )
-    scan = scan.outside_removed()                                             # the rock around the field: half the mass of
-    scan = scan.moments_matched()                                             # a view, a bright ring in the FBP before
-    sino = scan.clipped().sinogram( reduction = p.reduction )
+    scan = beyond_the_field( scan, p.outer )                                  # the rock around the field: half the mass of
+    sino = scan.clipped().sinogram( reduction = p.reduction )                 # a view, a bright ring in the FBP before
 
-    rec = Reconstruction( sino, recorder = recorder( sino, p.out_dir / "sandstone.sviz", f"otrec -- sandstone ( SLS TOMCAT ), slice { p.slice }", 100 ) )
+    rec = Reconstruction( sino, outer = p.outer, recorder = recorder( sino, p.out_dir / "sandstone.sviz", f"otrec -- sandstone ( SLS TOMCAT ), slice { p.slice }", 100 ) )
     solve( rec, p )
     rec.recorder.close( html = p.out_dir / "sandstone.html" )
 
 
-if p := experiment( "bamboo", paganin = Param( 30.0, help = "the filter of the phase contrast, in pixels^2 ( 0: none )" ), **PARAMS ):
+if p := experiment( "bamboo", paganin = Param( 30.0, help = "the filter of the phase contrast, in pixels^2 ( 0: none )" ), outer = OUTER,
+                    **PARAMS ):
     import numpy as np
     from otrec import Reconstruction, Scan, cached_download
 
@@ -164,10 +176,9 @@ if p := experiment( "bamboo", paganin = Param( 30.0, help = "the filter of the p
     if p.paganin:
         scan = scan.phase_retrieved( p.paganin )                              # ( the negative mass of the FBP: 44 % -> 5 % )
     scan = scan.centred()
-    scan = scan.outside_removed()
-    scan = scan.moments_matched()
+    scan = beyond_the_field( scan, p.outer )
     sino = scan.clipped().sinogram( reduction = p.reduction )
 
-    rec = Reconstruction( sino, recorder = recorder( sino, p.out_dir / "bamboo.sviz", "otrec -- bamboo ( ESRF ID19 )", 100 ) )
+    rec = Reconstruction( sino, outer = p.outer, recorder = recorder( sino, p.out_dir / "bamboo.sviz", "otrec -- bamboo ( ESRF ID19 )", 100 ) )
     solve( rec, p )
     rec.recorder.close( html = p.out_dir / "bamboo.html" )

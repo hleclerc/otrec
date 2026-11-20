@@ -9,14 +9,21 @@ from ..shapes import deposit_nodes, gaussian_matrix
 class Model:
     """What the transport compares: on the grid of the diracs ( `n_per_pixel` cells per pixel and per axis: `N` cells of
     side `h` from `origin` ), the image of the shapes and the masses of the diracs. `radius`: of the balls, and what sized balls and polygons are measured against ( they stay
-    within `max_ratio` of it ); `limit`: the radius of the centred ball that every view sees whole, where the shapes are kept.
+    within `max_ratio` of it ); `limit`: the radius of the centred ball where the shapes are kept, by default the one that
+    every view sees whole. `outer` ( world 2D ): a larger one, for an object BIGGER THAN THE FIELD: the shapes are deposited
+    on the detector extended by `pad` cells on each side, and only the window of the data is compared ( `finish` crops ).
+    A shape out of the window in a view is seen by the others; its mass in the window of a view is free, as the loss
+    normalizes each view.
     Tensors are float64, on the device of loom ( "cpu", "cuda"; None: loom's default, the card where there is one ). `view_batch`: how many views a 2D detector deposits at once ( `[ V, n, window ]` )."""
 
-    def __init__( self, sinogram, radius, k = 2, n_per_pixel = 1, view_batch = 8, device = None, max_ratio = 4.0 ):
+    def __init__( self, sinogram, radius, k = 2, n_per_pixel = 1, view_batch = 8, device = None, max_ratio = 4.0, outer = None ):
         self.sinogram, self.radius, self.k = sinogram, float( "nan" if radius is None else radius ), k if k == 0.5 else int( k )
-        self.max_ratio, self.limit = float( max_ratio ), sinogram.extent / 2
+        self.max_ratio, self.limit = float( max_ratio ), max( sinogram.extent / 2, float( outer or 0.0 ) )
         self.n_per_pixel, self.view_batch = int( n_per_pixel ), int( view_batch )
         self.N, self.h, self.origin = self.n_per_pixel * sinogram.nb_bins, sinogram.h / self.n_per_pixel, sinogram.origin
+        self.pad = int( math.ceil( ( self.limit - sinogram.extent / 2 ) / self.h - 1e-9 ) )
+        if self.pad and sinogram.dim != 2:
+            raise ValueError( "Model: `outer` is for a 1D detector ( world 2D )" )
         # one device for the tensors and the kernels: loom's ( `device`, when given, becomes its default )
         import loom
         if device is not None:
@@ -33,7 +40,11 @@ class Model:
 
     def detector( self ):
         """what the fused kernels take after the shapes: the axis of each view, and the grid"""
-        return ( self.axes[ :, 0 ], self.N, self.h, self.origin )
+        return ( self.axes[ :, 0 ], self.N + 2 * self.pad, self.h, self.origin - self.pad * self.h )
+
+    def window( self, cells ):
+        """`[ V, N ]`: of `cells [ V, N + 2 pad ]` on the extended detector, the window of the data"""
+        return cells[ :, self.pad : self.pad + self.N ] if self.pad else cells
 
     def tensor( self, x ):
         return torch.as_tensor( x, dtype = torch.float64, device = self.device )
@@ -57,6 +68,7 @@ class Model:
     def finish( self, deposit, sigma, background ):
         """a deposit `[ V, ... ]`, blurred by `sigma` ( pixels ) and lifted by `background` times its mean"""
         G = self._blur( float( sigma ) )
+        deposit = self.window( deposit ) if self.sinogram.dim == 2 else deposit
         v = deposit @ G.T if self.sinogram.dim == 2 else G @ deposit @ G.T
         return v + background * v.mean( dim = tuple( range( 1, v.ndim ) ), keepdim = True )
 

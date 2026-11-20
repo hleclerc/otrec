@@ -79,21 +79,23 @@ def gather( centres, C, masses, model, d_cells ):
     return fused.gather_ellipses( centres, C, masses, *model.detector(), *_window( model ), d_cells )
 
 
-def density( centres, radii, nb, extent, k, sub = 4, chunk = 2048 ):
-    """`[ nb, nb ]`: the mass of the balls ( tensors; masses as `radius^2`, 1 in all ) in each pixel of the centred square
-    of side `extent`, the density sampled on `sub^2` points per pixel -- what the balls say the object is"""
+def density( centres, radii, nb, extent, k, sub = 4, chunk = 2048, densities = None ):
+    """`[ nb, nb ]`: the mass of the balls ( tensors; masses as `radius^2`, or `densities radius^2`, 1 in all ) in each
+    pixel of the centred square of side `extent`, the density sampled on `sub^2` points per pixel -- what the balls say the
+    object is"""
     with torch.no_grad():
         n, hp = nb * sub, extent / ( nb * sub )
         reach = int( math.ceil( float( radii.max() ) / hp ) ) + 1
         off = torch.arange( -reach, reach + 1, device = centres.device )
-        amp = ( k + 0.5 ) / math.pi * hp * hp / ( radii * radii ).sum()                  # ( mass / radius^2: the same for all )
+        w = torch.ones_like( radii ) if densities is None else densities
+        amp = ( k + 0.5 ) / math.pi * hp * hp * w / ( w * radii * radii ).sum()           # ( mass / radius^2: the density )
         out = torch.zeros( n * n, dtype = centres.dtype, device = centres.device )
         for i in range( 0, len( centres ), chunk ):
             t = ( centres[ i:i + chunk ] + extent / 2 ) / hp - 0.5                       # in sample index units
             i0 = torch.round( t ).long()
             ia, ib = i0[ :, 0, None, None ] + off[ :, None ], i0[ :, 1, None, None ] + off[ None, : ]
             v = 1 - ( ( ( ia - t[ :, 0, None, None ] ) ** 2 + ( ib - t[ :, 1, None, None ] ) ** 2 ) * ( hp / radii[ i:i + chunk, None, None ] ) ** 2 )
-            val = torch.where( v > 0, v.clamp( min = 0 ) ** ( k - 0.5 ), 0.0 ) * amp
+            val = torch.where( v > 0, v.clamp( min = 0 ) ** ( k - 0.5 ), 0.0 ) * amp[ i:i + chunk, None, None ]
             ok = ( ia >= 0 ) & ( ia < n ) & ( ib >= 0 ) & ( ib < n )
             out.scatter_add_( 0, ( ia.clamp( 0, n - 1 ) * n + ib.clamp( 0, n - 1 ) ).expand_as( val ).reshape( -1 ), torch.where( ok, val, 0.0 ).reshape( -1 ) )
         return out.reshape( nb, sub, nb, sub ).sum( ( 1, 3 ) ).cpu().numpy()

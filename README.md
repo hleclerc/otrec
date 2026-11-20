@@ -68,7 +68,9 @@ there is one; `Reconstruction( device = "cpu" | "cuda" )` sets it ).
   of that mass whose density at the centre is the density of the matter ( 0.89 d in 2D for k = 2 ). `multiscale` takes it
   again before each stage ( `add_random_balls` takes the radius it is given, `split_items` divides it ). 3D: the same formula, not calibrated.
 * **The observable domain**. A shape must stay where every view sees it whole: its centre is pulled back so that centre
-  + reach stays in the centred ball of diameter `extent` ( `shapes.balls.inside` ).
+  + reach stays in the centred ball of diameter `extent` ( `shapes.balls.inside` ). For an object bigger than the field
+  ( 2D ), `Reconstruction( outer = )` lets them stand around it, up to that radius: the detector is extended for the
+  deposit, and only its window is compared with the data ( `loss.Model` ).
 * **Transport** ( `transport/` ). 1D: the plan is monotone, W2^2 has a closed form that autograd differentiates
   ( float64, a few ms ). 2D: sdot's dedicated grid solver ( `nb_bins` a power of two from 32 ), warm started from the
   last solve of the view; the derivative with respect to the image is the Kantorovich potential.

@@ -148,17 +148,21 @@ class Scan:
         mirrored = np.concatenate( [ self.values, self.values[ :, ::-1 ] ], 1 )             # ( no jump at the ends )
         return self._with( np.fft.irfft( np.fft.rfft( mirrored, axis = 1 ) / ( 1 + a * k * k ), 2 * N, axis = 1 )[ :, :N ] )
 
-    def outside_removed( self, pad = 1.0, nb_bins = 512, nb_views = 360, edge = 8 ):
+    def outside_removed( self, radius = 1.0, pad = 1.0, nb_bins = 512, nb_views = 360, edge = 8 ):
         """matter BIGGER THAN THE FIELD: what the matter outside the disk adds to the views, taken off them, so that they are
         the projections of the disk alone ( what the shapes can give ). The views, `nb_bins` and `nb_views` of them, are
         extended by `pad` radii on each side ( the value at their ends, mean of `edge` bins, falling to 0 as a cosine ); the
         filtered back projection of that, outside the disk, projected back, is the estimate, interpolated onto the views.
         It is wrong where the extension is ( the shape of the sample is not known ): by a smooth amount, which
-        `moments_matched` corrects"""
+        `moments_matched` corrects. `radius` ( in radii of the disk ): only the matter beyond it taken off, for shapes
+        that may stand around the field ( `Reconstruction( outer = radius )` ), the closest matter, which an extension
+        guesses the worst"""
         from .projection import filtered_backprojection, project_image
         if not self.is_centred:
             raise ValueError( "Scan.outside_removed: centre it first ( `centred` )" )
-        sino = self.sinogram( nb_bins = nb_bins, nb_views = nb_views )
+        half = int( ( np.mod( self.angles, 2 * np.pi ) < np.pi ).sum() )               # ( no more than the scan has )
+        sino = self.sinogram( nb_bins = min( nb_bins, self.nb_pixels ), nb_views = min( nb_views, half ) )
+        nb_bins = sino.nb_bins
         W = int( round( pad * nb_bins / 2 ) )
         taper = np.cos( 0.5 * np.pi * ( np.arange( W ) + 0.5 ) / W ) ** 2
         v = sino.values
@@ -166,7 +170,7 @@ class Scan:
         n, E, directions = nb_bins + 2 * W, 2.0 * ( nb_bins + 2 * W ) / nb_bins, sino.axes[ :, 0, : ]
         image = filtered_backprojection( np.concatenate( [ ends[ 0 ], v, ends[ 1 ] ], 1 ), E, directions, n )
         x = -E / 2 + E / n * ( np.arange( n ) + 0.5 )
-        image[ x[ :, None ] ** 2 + x[ None, : ] ** 2 <= 1.0 ] = 0.0
+        image[ x[ :, None ] ** 2 + x[ None, : ] ** 2 <= radius ** 2 ] = 0.0
         outside = project_image( image, E, directions, n )[ :, W:W + nb_bins ]
 
         # onto the views of the scan: a view at t + pi is the one at t mirrored; linear in the angle ( periodic over

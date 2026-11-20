@@ -39,7 +39,7 @@ class Loss1d:
             centres, radii = self.kind.discs( x, md )
         mu = self.kind.deposit( *shapes, md ).requires_grad_( True )
         image, data = md.finish( mu, sigma, background ), md.data( sigma, background )
-        d_cells = torch.autograd.grad( w2_diracs_vs_bins( self.diracs, data, image, md.origin, md.h ).sum(), mu )[ 0 ]
+        d_cells = md.window( torch.autograd.grad( w2_diracs_vs_bins( self.diracs, data, image, md.origin, md.h ).sum(), mu )[ 0 ] )
         image = image.detach()
         totals = image.sum( 1 )
         ratio = ( data / data.sum( 1, keepdim = True ) ) / ( image / totals[ :, None ] )

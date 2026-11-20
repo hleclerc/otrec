@@ -23,11 +23,19 @@ def w2_diracs_vs_bins( y, b, v, origin, h ):
     j = ( torch.searchsorted( F.detach(), C, right = True ) - 1 ).clamp( 0, N - 1 )
     q = torch.clamp( edges[ j ] + ( C - F.gather( 1, j ) ) / f.gather( 1, j ), edges[ 0 ], edges[ -1 ] )   # the quantiles
 
-    pts = torch.sort( torch.cat( [ edges.expand( V, -1 ), q ], 1 ), 1 ).values
+    # the breakpoints, by BIN then by position, each edge before the quantiles of its bin. A piece takes the bin of the
+    # point it starts at, and the dirac after the quantiles before it: read from that order, never from positions. A
+    # quantile sits ON an edge wherever both cumulated masses agree ( a uniform background, one dirac per bin ): a test on
+    # positions ( or an unstable sort, as torch's on the CPU ) then gives the piece that ends at q_i the density of bin
+    # j - 1, while q_i moves with the density of bin j -- the loss right, its gradient wrong ( 1e-4 relative )
+    allp = torch.cat( [ edges.expand( V, -1 ), q ], 1 )
+    bins = torch.cat( [ torch.arange( N + 1, device = v.device ).expand( V, -1 ), j ], 1 )
+    is_q = torch.cat( [ torch.zeros_like( bins[ :, :N + 1 ] ), torch.ones_like( j ) ], 1 )
+    o = torch.sort( allp.detach(), dim = 1, stable = True ).indices
+    o = o.gather( 1, torch.sort( bins.gather( 1, o ), dim = 1, stable = True ).indices )
+    pts = allp.gather( 1, o )
     lo, hi = pts[ :, :-1 ], pts[ :, 1: ]
-    mid = ( 0.5 * ( lo + hi ) ).detach()
-    jm = torch.floor( ( mid - origin ) / h ).long().clamp( 0, N - 1 )                        # the bin of each piece
-    Fm = ( F.gather( 1, jm ) + f.gather( 1, jm ) * ( mid - edges[ jm ] ) ).detach()
-    im = torch.searchsorted( C.detach(), Fm, right = True ).clamp( 0, M - 1 )                # its dirac
+    jm = bins.gather( 1, o )[ :, :-1 ].clamp( max = N - 1 )                                  # the bin of each piece
+    im = torch.cumsum( is_q.gather( 1, o ), 1 )[ :, :-1 ].clamp( max = M - 1 )               # its dirac
     a, c = hi - y[ im ], lo - y[ im ]
     return ( f.gather( 1, jm ) / 3 * ( a * a * a - c * c * c ) ).sum( 1 )

@@ -172,6 +172,49 @@ if test( "2D ellipses: round ones are the balls they come from; the gradient mat
     assert np.allclose( an, fd, rtol = 1e-4, atol = 1e-8 ), ( an, fd )
 
 
+
+if test( "2D outer: inside the field, the loss and its gradient as without it" ):
+    sino = sino_of_shapes( TRUTH, 0.12 )
+    a = Reconstruction( sino ).add_random_balls( 6, 0.12 )
+    b = Reconstruction( sino, a.points, radius = 0.12, outer = 1.5 )
+    assert b.model.pad > 0
+    fa, ga = a.value_and_grad()
+    fb, gb = b.value_and_grad()
+    assert np.isclose( fa, fb, rtol = 1e-12 ) and np.allclose( ga, gb, rtol = 1e-10, atol = 1e-14 ), ( fa, fb )
+
+if test( "2D outer: an object bigger than the field -- its truth, the gradient of the shapes out of the window" ):
+    big = np.concatenate( [ TRUTH, [ [ 1.2, 0.3 ], [ -0.2, -1.25 ], [ -0.9, 0.9 ] ] ] )
+    s = Sinogram( 2, 12, 64, extent = 2.0 )
+    s.values = Reconstruction( s, big, radius = 0.12, outer = 1.5 ).image( sigma = 0.0, background = 0.0 )
+    rec = Reconstruction( s, big, radius = 0.12, outer = 1.5 )
+    f = rec.value_and_grad()[ 0 ]
+    assert f < 1.05 * rec.loss_fn.floor, ( f, rec.loss_fn.floor )
+    assert rec.value_and_grad( big + np.array( [ [ 0.0, 0.0 ] ] * 4 + [ [ 0.05, 0.0 ] ] * 3 ) )[ 0 ] > 2 * f
+    an, fd = finite_difference( lambda p: rec.value_and_grad( p ), big + 0.02, eps = 1e-6 )
+    assert np.allclose( an, fd, rtol = 1e-4, atol = 1e-8 ), ( an, fd )
+
+if test( "2D on the CPU: the gradient matches finite differences, and the card's where there is one" ):
+    # quantiles exactly on bin edges ( a uniform background, one dirac per bin ): `w2_diracs_vs_bins` must not depend on
+    # how ties sort ( torch's CPU sort put them the other way round than the card's: a gradient off by 1e-4 relative ).
+    # Explicit device, loom's default put back: the tests before run on loom's default, those after on the CPU anyway
+    import loom
+    before = loom.default_device
+    try:
+        big = np.concatenate( [ TRUTH, [ [ 1.2, 0.3 ], [ -0.2, -1.25 ], [ -0.9, 0.9 ] ] ] )
+        s = Sinogram( 2, 12, 96, extent = 3.0 )
+        s.values = Reconstruction( s, big, radius = 0.12, device = "cpu" ).image( sigma = 0.0, background = 0.0 )
+        rec = Reconstruction( s, big, radius = 0.12, device = "cpu" )
+        assert rec.model.device.type == "cpu"
+        an, fd = finite_difference( lambda p: rec.value_and_grad( p ), big + 0.02, eps = 1e-6 )
+        assert np.allclose( an, fd, rtol = 1e-6, atol = 1e-9 ), ( an, fd )
+        g_cpu = rec.value_and_grad( big + 0.02 )[ 1 ]           # ( before the card's model: loom's device is one global )
+        loom.default_device = None
+        if loom.resolved_device().name == "Cuda":
+            g_card = Reconstruction( s, big, radius = 0.12, device = "cuda" ).value_and_grad( big + 0.02 )[ 1 ]
+            assert np.allclose( g_cpu, g_card, rtol = 1e-10, atol = 1e-13 ), np.abs( g_cpu - g_card ).max()
+    finally:
+        loom.default_device = before
+
 if test( "fields: what each view asks of the balls adds up to the gradient" ):
     import torch
     from otrec.loss import fields

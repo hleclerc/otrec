@@ -84,7 +84,8 @@ class Recorder:
     by `sviz open`, while the run goes on ), and `frames` keeps only what the curves need ( no points, radii, drawing,
     fields; `median_radius` instead ). `page`: the options of `write_html` ( title, truth_edges, truth_points, images,
     truth_name, field, curves, fps ), known from the start. `on_frame`: called each time the store says it changed ( say,
-    `lambda: errand.view( store )` ). `close()` writes the last frame."""
+    `lambda: errand.view( store )` ). `close()` writes the last frame; it is called at the end of the process if not
+    before ( `atexit` ), and a second call does nothing."""
 
     def __init__( self, every = None, metrics = None, verbose = False, fields = True, store = None, page = None, on_frame = None ):
         self.every, self.metrics, self.verbose = None if every is None else max( 1, int( every ) ), dict( metrics or { } ), verbose
@@ -93,6 +94,9 @@ class Recorder:
         self.dim, self.floor = 2, 0.0
         self.store, self.page, self.on_frame = store, dict( page or { } ), on_frame
         self._viz = None
+        if store is not None:                                          # the store closed at the end of the run, if not before
+            import atexit
+            atexit.register( self.close )
 
     @property
     def stages( self ):
@@ -177,6 +181,7 @@ class Recorder:
         if self._viz is not None:
             self._curves( self._viz.clear_curves(), self.frames, self.page.get( "curves", ( "loss", ) ) )    # ( the losses after the last frame too )
             self._viz.close()
+            self._viz = None
             if html is not None:
                 from sdot.viz.sviz import export_html
                 export_html( self.store, html )
